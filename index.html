@@ -611,7 +611,11 @@ const LHC = (() => {
   async function fetchJson(url, opts, fetchFn){
     const f = fetchFn || fetch;
     const r = await f(url, Object.assign({cache:"no-store"}, opts||{}));
-    if (!r.ok) throw new Error("HTTP " + r.status);
+    if (!r.ok) {
+      let body = "";
+      try { body = (await r.text()).slice(0, 200).replace(/\s+/g, " ").trim(); } catch (e) {}
+      throw new Error("HTTP " + r.status + (body ? " — " + body : ""));
+    }
     return r.json();
   }
   async function fetchFirstJson(urls, fetchFn){
@@ -638,7 +642,11 @@ const LHC = (() => {
     const r = await f(`https://firestore.googleapis.com/v1/${fsDocBase()}${encodeURIComponent(uid)}?key=${FB.key}`,
       {headers: token ? {Authorization:"Bearer "+token} : {}});
     if (r.status === 404) return {fields:{}, code:404};
-    if (!r.ok) return {fields:null, code:r.status};
+    if (!r.ok) {
+      let err = "";
+      try { err = (await r.text()).slice(0, 200).replace(/\s+/g, " ").trim(); } catch (e) {}
+      return {fields:null, code:r.status, error:err};
+    }
     const d = await r.json();
     return {fields: decodeFields(d.fields), code:200};
   }
@@ -837,10 +845,20 @@ async function syncProfile(url, msgEl){
   if (!uid) { msgEl.textContent = "That doesn't look like a profile link — it needs /profile/<id>."; msgEl.className = "msg err"; return false; }
   msgEl.textContent = "Signing in…"; msgEl.className = "msg";
   try {
-    const token = await LHC.anonSignIn();
+    // Anonymous sign-in is best-effort — mirror the desktop app, which
+    // tolerates a failed guest token and still attempts the read. Some browser
+    // origins get their sign-in refused; we still try the read, which either
+    // succeeds or returns a precise status we can show.
+    let token = null, signInErr = null;
+    try { token = await LHC.anonSignIn(); } catch (ex) { signInErr = ex.message; }
     msgEl.textContent = "Reading your collection…";
-    const {fields, code} = await LHC.fsGetCollectionDoc(uid, token);
-    if (code !== 200 || !fields) throw new Error("profile read failed (HTTP "+code+")");
+    const {fields, code, error} = await LHC.fsGetCollectionDoc(uid, token);
+    if (code !== 200 || !fields) {
+      let m = "profile read failed (HTTP " + code + ")" + (error ? " — " + error : "");
+      if (signInErr && (code === 401 || code === 403))
+        m += ". Guest sign-in was blocked too: " + signInErr;
+      throw new Error(m);
+    }
     const p = LHC.profileFromFields(fields);
     if (!p.own.size && !p.wish.size)
       throw new Error("profile loaded but no owned locks or wishlist found on it");
@@ -1049,9 +1067,15 @@ async function runCompare(){
   msg.textContent = "Reading their collection…"; msg.className="msg";
   $("cmpBtn").disabled = true;
   try {
-    const token = await LHC.anonSignIn();
-    const {fields, code} = await LHC.fsGetCollectionDoc(uid, token);
-    if (code !== 200 || !fields) throw new Error("read failed (HTTP "+code+")");
+    let token = null, signInErr = null;
+    try { token = await LHC.anonSignIn(); } catch (ex) { signInErr = ex.message; }
+    const {fields, code, error} = await LHC.fsGetCollectionDoc(uid, token);
+    if (code !== 200 || !fields) {
+      let m = "read failed (HTTP " + code + ")" + (error ? " — " + error : "");
+      if (signInErr && (code === 401 || code === 403))
+        m += ". Guest sign-in was blocked too: " + signInErr;
+      throw new Error(m);
+    }
     const theirs = LHC.profileFromFields(fields);
     if (!theirs.own.size) throw new Error("that profile has no owned locks saved (or it's private)");
     const mine = S.own;
