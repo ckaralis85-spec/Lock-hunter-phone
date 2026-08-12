@@ -100,7 +100,6 @@ ul.list li:active{background:var(--sel)}
 .badge{font-size:9.5px; font-weight:700; padding:1px 6px; border-radius:9px; letter-spacing:.4px}
 .b-own{background:rgba(63,185,80,.16); color:var(--deal); border:1px solid rgba(63,185,80,.4)}
 .b-wish{background:rgba(224,162,49,.14); color:var(--accent); border:1px solid rgba(224,162,49,.4)}
-.b-prio{background:rgba(159,33,229,.16); color:#c77df2; border:1px solid rgba(159,33,229,.45)}
 .b-bz{background:rgba(62,113,189,.16); color:#7ea9e0; border:1px solid rgba(62,113,189,.45)}
 /* ---- detail sheet ---- */
 #sheetWrap{position:fixed; inset:0; z-index:60; display:none}
@@ -258,7 +257,7 @@ a.plain{color:var(--accent); text-decoration:none}
 <!-- onboarding -->
 <div id="onboard">
   <h1>Lock <span>Hunter</span></h1>
-  <div class="muted" style="margin-bottom:16px">phone companion · v1.0.7</div>
+  <div class="muted" style="margin-bottom:16px" id="obVer">phone companion</div>
   <div class="card">
     <h2>Sync your collection</h2>
     <div class="muted" style="margin-bottom:10px">
@@ -285,7 +284,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.0.7";
+  const VERSION = "1.0.9";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -389,19 +388,103 @@ const LHC = (() => {
     s = s.normalize("NFKD").replace(/[\u0300-\u036f]/g,"");
     return s.toLowerCase().replace(/[^a-z0-9]+/g," ").trim();
   }
-  // ---- token rules mirror _lock_tokens' single-char discipline (L1848)
-  function tokensOf(name){
-    const keep = new Set();
-    for (const t of String(name||"").split(/[^0-9A-Za-z]+/))
-      if (t.length === 1 && (/[0-9]/.test(t) || t === t.toUpperCase())) keep.add(t.toLowerCase());
-    return foldLight(name).split(" ").filter(t => t && (t.length > 1 || keep.has(t)));
-  }
   function escRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&"); }
-  function matchTokens(foldedText, toks){
-    if (!foldedText || !toks.length) return false;
-    return toks.every(t => t.length <= 2
-      ? new RegExp("\\b"+escRe(t)+"\\b").test(foldedText)
-      : foldedText.includes(t));
+  // ---- FULL fold, faithful to desktop _fold (L1034): explicit map + NFKD +
+  // drop combining, but KEEP ASCII punctuation and turn non-ASCII into a space
+  // (so the alias/size regexes below see "s&g" and "83/45" exactly as _fold does;
+  // foldLight above strips punctuation and is kept only for the UI find boxes).
+  function fold(s){
+    s = String(s||"");
+    for (const [a,b] of FOLD_MAP) s = s.split(a).join(b);
+    s = s.normalize("NFKD").replace(/[̀-ͯ]/g,"");
+    s = s.replace(/[^\x00-\x7f]/g," ");
+    return s.replace(/\s+/g," ").trim().toLowerCase();
+  }
+  // ---- _norm_sizes (L1790): glue digit<delim>digit (83/45, 83-45, 83x45 → 8345)
+  function normSizes(s){
+    return String(s).replace(/(?<=\d)\s*[/xX×✕-]\s*(?=\d)/g, "");
+  }
+  // ---- brand aliases → one canonical token, from desktop _BRAND_ALIASES /
+  // _ALIAS_CANON (L1803-1849). Applied longest-alias-first with alnum boundary
+  // guards so multi-word brands survive tokenizing (Mul-T-Lock→mtl,
+  // "Sargent and Greenleaf"→sng). List mirrors the desktop's computed canon.
+  const ALIAS_CANON = [
+    ["sargent and greenleaf","sng"],["sargent & greenleaf","sng"],["sargent greenleaf","sng"],
+    ["corbin russwin","corbin"],["abloy protec2","protec2"],["carl wittkopp","cawi"],
+    ["burg-wachter","burg"],["burg wachter","burg"],["abloy protec","protec2"],["burgwachter","burg"],
+    ["mul-t-lock","mtl"],["mul t lock","mtl"],["zeiss ikon","zi"],["assa abloy","assa"],["dorma kaba","kaba"],
+    ["mult-lock","mtl"],["dormakaba","kaba"],["multlock","mtl"],["wittkopp","cawi"],["protec 2","protec2"],
+    ["s and g","sng"],["zi ikon","zi"],["russwin","corbin"],["protec2","protec2"],
+    ["emhart","emha"],["corbin","corbin"],["s & g","sng"],["zeiss","zi"],
+    ["cawi","cawi"],["burg","burg"],["assa","assa"],["kaba","kaba"],["emha","emha"],
+    ["mtl","mtl"],["s&g","sng"],["sng","sng"],["zi","zi"]
+  ];
+  function canonAliases(folded){
+    for (const [alias, canon] of ALIAS_CANON)
+      folded = folded.replace(new RegExp("(?<![a-z0-9])"+escRe(alias)+"(?![a-z0-9])","g"), canon);
+    return folded;
+  }
+  // ---- _lock_tokens (L1863) — fold → canon-alias → size-glue → split; keep
+  // single-char model designators (digit always, letter only if UPPERCASE in
+  // the source) and carry non-Latin words through as their own tokens.
+  function tokensOf(name){
+    name = String(name||"");
+    const prepared = normSizes(canonAliases(fold(name)));
+    const keep = new Set();
+    for (const t of name.split(/[^0-9A-Za-z]+/))
+      if (t.length === 1 && (/[0-9]/.test(t) || t === t.toUpperCase())) keep.add(t.toLowerCase());
+    const toks = prepared.split(/[^a-z0-9]+/).filter(t => t && (t.length > 1 || keep.has(t)));
+    for (const t of name.toLowerCase().split(/[^\p{L}\p{N}_]+/u))
+      if (t.length > 1 && /[^\x00-\x7f]/.test(t)) toks.push(t);
+    return toks;
+  }
+  const titleWords = tl => new Set(String(tl).split(/[^a-z0-9]+/));
+  // ---- _only_in_part_number (L1937): reject an alpha token that only heads a
+  // long part number ("FUG" in "FUG500010") and isn't the compact spelling of
+  // this very lock ("MTL400").
+  function onlyInPartNumber(tok, tl, toks){
+    const others = toks.filter(t => t !== tok && t);
+    let found = false;
+    for (const w of titleWords(tl)){
+      if (!w.includes(tok)) continue;
+      const tail = w.slice(tok.length);
+      if (!(w.startsWith(tok) && tail.length >= 3 && /^[0-9]{3}/.test(tail))) return false;
+      if (others.some(o => tail.startsWith(o))) return false;
+      if (tail.length <= 4 && /^[0-9]+$/.test(tail)) return false;
+      found = true;
+    }
+    return found;
+  }
+  // ---- _match_tokens (L1887) — EVERY token present, size/alias-tolerant; short
+  // tokens (≤2) must stand alone on boundaries; long alpha tokens can't hide
+  // inside a part number; non-ASCII tokens are checked against the raw title.
+  // Pass the RAW row text — matchTokens applies the same fold→canon→size pipeline.
+  function matchTokens(title, toks){
+    if (!title || !toks.length) return false;
+    const tlRaw = canonAliases(fold(title));
+    const tl = normSizes(tlRaw);
+    let tlNative = null;
+    for (const tok of toks){
+      if (/[^\x00-\x7f]/.test(tok)){
+        if (tlNative === null) tlNative = String(title).toLowerCase();
+        if (tlNative.includes(tok)) continue;
+        return false;
+      }
+      const tk = normSizes(canonAliases(tok));
+      if (tok.length <= 2){
+        const re = new RegExp("(?<![a-z0-9])"+escRe(tok)+"(?![a-z0-9])");
+        if (re.test(tl) || re.test(tlRaw)) continue;
+        if (tk !== tok && tl.includes(tk)) continue;
+        return false;
+      }
+      if (tl.includes(tk) || tl.includes(tok)){
+        if (/^[a-z]+$/.test(tok) && !titleWords(tl).has(tok) && onlyInPartNumber(tok, tl, toks))
+          return false;
+        continue;
+      }
+      return false;
+    }
+    return true;
   }
   // ---- _split_catalog_names (L562-605) — EXACT port, incl. the
   // numeric-fragment reattach ("ABUS 74/40" stays one lock) and keeping the
@@ -443,23 +526,20 @@ const LHC = (() => {
     const digits = bzPrice(e).replace(/[^0-9]/g,"");
     return "c:" + [seller,lock,digits].join("|");
   }
-  // link for a bazaar row: its share url, else the lock deep-link
-  // (id + name only — the format verified working; see 6.1.0 _bz_url notes)
-  function bzListingUrl(e, matchedLock){
-    const u = String((e&&e.url)||"").trim();
-    if (u) return u;
-    if (matchedLock)
-      return `${BAZAAR_URL}?id=${matchedLock.id}&name=${encodeURIComponent(matchedLock.name)}`;
-    return BAZAAR_URL;
-  }
-  // Per-LOCK bazaar link — opens the lock's OWN entry by its LPU id (?id=<lockid>),
-  // which the bazaar destructures to open that lock's listings. Verified against the
-  // live site (lock-trackers FilterContext/DataProviderLB: id is exempt from
-  // filtering and opens the detail; name is cosmetic). Searching by name fails for
-  // slash-joined multi-name entries like "ASSA 700 / Ruko 700".
+  // Per-LOCK bazaar link. Mirrors the belt explorer's OWN "VIEW LISTINGS FOR THIS
+  // LOCK" button (lpu-belt-explorer OpenLinkToLockbazaarButton.jsx), which opens
+  //   https://lpulocks.com/#/lockbazaar?search=<catalogLockId>&name=<safeName>
+  // The bazaar fuzzy-matches ?search= against each entry (keys ['fuzzy','id'] in
+  // lock-trackers DataProviderLB.jsx); its entry ids are "<catalogLockId>-<sellerId>",
+  // so searching the 8-hex catalog id opens exactly that lock's listings — robust for
+  // slash-joined multi-name locks where ?search=<name> matched nothing. NOTE: on the
+  // bazaar, ?id= and ?name= are destructured out and NEVER read (id is inert there —
+  // it is only the query key of the SEPARATE share.lpubelts.com page), so the old
+  // ?id= link opened the unfiltered bazaar. ?search= is the correct key.
   function bazaarLockUrl(lock){
     if (!lock || !lock.id) return BAZAAR_URL;
-    return `${BAZAAR_URL}?id=${encodeURIComponent(lock.id)}&name=${encodeURIComponent(lock.name || "")}`;
+    const safeName = String(lock.name || "").replace(/[\s/]/g, "_").replace(/\W/g, "");
+    return `${BAZAAR_URL}?search=${encodeURIComponent(lock.id)}&name=${safeName}`;
   }
   // ---- feed → flat listings (desktop accepts list, {listings}, nested validListings)
   function collectListings(data){
@@ -508,7 +588,7 @@ const LHC = (() => {
       if (!isLockListing(row)) return;
       const lbn = bzLockName(row);
       const exact = lbn ? (byFold.get(foldLight(lbn)) || null) : null;
-      const text = foldLight(bzMake(row)+" "+bzModel(row)+" "+lbn);
+      const text = fold(bzMake(row)+" "+bzModel(row)+" "+lbn);
       const rowBelt = bzBelt(row).toLowerCase();
       let best = null, bestScore = -1;
       const hits = new Set();
@@ -696,9 +776,9 @@ const LHC = (() => {
   return {VERSION, CANONICAL_BELTS, BELT_RANK, BELT_COLORS, UNRANKED_GREY,
           URLS, BAZAAR_URL, FB,
           canonicalBelt, dispBelt, rarityStars, starsTxt, lpuSlug, mapCatalog,
-          foldLight, tokensOf, matchTokens, splitCatalogNames,
+          foldLight, fold, normSizes, canonAliases, tokensOf, matchTokens, splitCatalogNames,
           bzSeller, bzMake, bzModel, bzBelt, bzLockName, bzPrice,
-          bzEntryKey, bzListingUrl, bazaarLockUrl, collectListings, isLockListing, matchBazaar,
+          bzEntryKey, bazaarLockUrl, collectListings, isLockListing, matchBazaar,
           parseLeaderboard, rankLeaders, isNoDisplayName, extractUid,
           fsValue, decodeFields, profileFromFields,
           fetchJson, fetchFirstJson, anonSignIn, fsGetCollectionDoc, fsBatchGet,
@@ -765,8 +845,8 @@ function renderAbout(){
     return `${FEED_LABELS[k]}: ${mark} ${esc(v.detail||"")}`;
   }).join("<br>");
   $("aboutBox").innerHTML =
-    `Lock Hunter phone companion v${LHC.VERSION} — browsing, collection, compare,` +
-    ` owners and Bazaar. Hunting stays on the PC.<br><br>` +
+    `Lock Hunter phone companion v${LHC.VERSION} — browsing, collection, compare` +
+    ` and owners. Hunting stays on the PC.<br><br>` +
     `<b>Data feeds</b> (this open):<br>${rows}` +
     (S.feeds.bazaar.st === "fail" || S.feeds.leaderboard.st === "fail"
       ? `<br><br><span style="color:var(--bad)">A feed is blocked from this page's origin — tell Claude which one and the mirror fallback gets built.</span>`
@@ -1060,8 +1140,12 @@ async function runCompare(){
     //   theyHave = THEIR owned ∩ YOUR wishlist  (locks you want that they have)
     //   youHave  = YOUR owned  ∩ THEIR wishlist  (locks they want that you have)
     const lk = id => S.byId.get(id);
-    const bySort = a => a.filter(Boolean).sort((x,y) =>
-      (LHC.BELT_RANK[x.belt]-LHC.BELT_RANK[y.belt]) || x.name.localeCompare(y.name));
+    // desktop's default Compare sort is name only (_render_compare keyf =
+    // (r[0] or "").lower()); belt-rank is the desktop's opt-in column mode.
+    const bySort = a => a.filter(Boolean).sort((x,y) => {
+      const xn = String(x.name||"").toLowerCase(), yn = String(y.name||"").toLowerCase();
+      return xn < yn ? -1 : xn > yn ? 1 : 0;
+    });
     const theyHave = bySort([...theirs.own].filter(id => S.wish.has(id)).map(lk));
     const youHave  = bySort([...S.own].filter(id => theirs.wish.has(id)).map(lk));
     const nm = $("cmpUrl").value.match(/[?&]name=([^&]+)/);
@@ -1093,13 +1177,7 @@ function runCompareOn(uid, name){
   switchView("compare");
   runCompare();
 }
-function downloadCsv(name, rows){
-  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\r\n");
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"}));
-  a.download = name; a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-}
+// (downloadCsv removed in 1.0.8 — orphaned when the Owners/Compare CSV exports were dropped)
 
 /* ---------- OWNERS view ---------- */
 function ownersCacheLoad(){
@@ -1266,6 +1344,7 @@ function buildNav(){
 async function boot(){
   buildNav();
   $("hdrVer").textContent = "v" + LHC.VERSION;
+  { const ov = $("obVer"); if (ov) ov.textContent = "phone companion · v" + LHC.VERSION; }
   setFeed("catalog","…"); setFeed("stats","…"); setFeed("bazaar","…"); setFeed("leaderboard","…");
   ownersCacheLoad();
   $("lockFind").oninput = renderLocks;
@@ -1289,8 +1368,8 @@ async function boot(){
   setupSheetSwipe();
   // (feed-status pills + "Re-test data feeds" button removed per request)
   $("wipeBtn").onclick = () => {
-    if (!confirm("Clear everything saved on this phone (profile, priorities, caches)?")) return;
-    for (const k of ["own","wish","prio","customs","profile","catalog","owners","bzsnap","bzseeded"]) store.del(k);
+    if (!confirm("Clear everything saved on this phone (profile and caches)?")) return;
+    for (const k of ["own","wish","profile","catalog","owners","bzsnap","bzseeded","obskip"]) store.del(k);
     location.reload();
   };
   // onboarding
