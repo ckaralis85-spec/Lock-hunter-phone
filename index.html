@@ -42,7 +42,7 @@ main{padding:12px 12px calc(84px + env(safe-area-inset-bottom))}
 .muted{color:var(--mute); font-size:12.5px}
 input[type=text],input[type=search],input[type=url],select{
   width:100%; background:var(--field); color:var(--text); border:1px solid var(--line);
-  border-radius:10px; padding:10px 12px; font-size:15px; outline:none; appearance:none}
+  border-radius:10px; padding:10px 12px; font-size:16px; outline:none; appearance:none}
 input:focus,select:focus{border-color:var(--accent)}
 button{background:var(--panel2); color:var(--text); border:1px solid var(--line);
   border-radius:10px; padding:10px 14px; font-size:14px; font-weight:600; cursor:pointer}
@@ -53,7 +53,7 @@ button:disabled{opacity:.45}
 .row.wrap{flex-wrap:wrap}
 .grow{flex:1; min-width:0}
 /* ---- tiles (Collection) ---- */
-.tiles{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:12px}
+.tiles{display:grid; grid-template-columns:repeat(2,1fr); gap:8px; margin-bottom:12px}
 .tile{background:var(--panel); border:1px solid var(--line); border-radius:14px;
   padding:10px 8px; text-align:center}
 .tile .n{font-size:22px; font-weight:700; color:var(--text)}
@@ -147,7 +147,6 @@ a.plain{color:var(--accent); text-decoration:none}
 <header>
   <h1>Lock <span>Hunter</span> <span style="font-weight:400;color:var(--mute);font-size:12px">companion</span></h1>
   <div class="sub" id="hdrSub">catalog loading…</div>
-  <div id="feedPills"></div>
 </header>
 
 <main>
@@ -161,20 +160,11 @@ a.plain{color:var(--accent); text-decoration:none}
         <option value="all">All locks</option>
         <option value="own">I own</option>
         <option value="wish">Wishlist</option>
-        <option value="prio">Priorities</option>
       </select>
     </div>
     <div class="beltchips" id="beltChips"></div>
   </div>
   <div class="muted" id="lockCount" style="margin:2px 2px 8px"></div>
-  <div class="card" id="prioAddCard" style="display:none">
-    <h2>Not on LPU?</h2>
-    <div class="row">
-      <input type="text" id="customName" class="grow" placeholder="Any lock name…">
-      <button class="small" id="customAdd">Add priority</button>
-    </div>
-    <div class="muted" style="margin-top:6px">Custom priorities live on this phone only. The desktop app hunts its own priority list.</div>
-  </div>
   <ul class="list" id="lockList"></ul>
 </section>
 
@@ -202,7 +192,6 @@ a.plain{color:var(--accent); text-decoration:none}
     <h2>This page</h2>
     <div class="muted" id="aboutBox"></div>
     <div class="row" style="margin-top:10px">
-      <button class="small" id="feedRetry">Re-test data feeds</button>
       <button class="small" id="wipeBtn">Clear local data</button>
     </div>
   </div>
@@ -239,32 +228,11 @@ a.plain{color:var(--accent); text-decoration:none}
       <button class="small" id="ownLoad">Load collections</button>
       <button class="small" id="wishTop">Top wishlist owners</button>
       <button class="small" id="bzTop">Top Bazaar sellers</button>
-      <button class="small" id="ownCsv" disabled>CSV</button>
     </div>
     <div class="msg" id="ownMsg"></div>
     <progress id="ownProg" max="100" value="0" style="display:none"></progress>
   </div>
   <div id="ownOut"></div>
-</section>
-
-<!-- ================= BAZAAR ================= -->
-<section class="view" id="view-bazaar">
-  <div class="card">
-    <h2>LPU Lock Bazaar</h2>
-    <div class="row">
-      <input type="search" id="bzFind" class="grow" placeholder="Filter listings…">
-      <select id="bzMode" style="width:128px; flex:none">
-        <option value="all">All</option>
-        <option value="new">New</option>
-        <option value="wish">My wishlist</option>
-      </select>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <div class="muted grow" id="bzInfo"></div>
-      <button class="small" id="bzSeen">Mark all seen</button>
-    </div>
-  </div>
-  <div id="bzOut"></div>
 </section>
 
 </main>
@@ -281,7 +249,7 @@ a.plain{color:var(--accent); text-decoration:none}
 <!-- onboarding -->
 <div id="onboard">
   <h1>Lock <span>Hunter</span></h1>
-  <div class="muted" style="margin-bottom:16px">phone companion</div>
+  <div class="muted" style="margin-bottom:16px">phone companion · v1.0.3</div>
   <div class="card">
     <h2>Sync your collection</h2>
     <div class="muted" style="margin-bottom:10px">
@@ -308,7 +276,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.0.0";
+  const VERSION = "1.0.3";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -474,6 +442,13 @@ const LHC = (() => {
     if (matchedLock)
       return `${BAZAAR_URL}?id=${matchedLock.id}&name=${encodeURIComponent(matchedLock.name)}`;
     return BAZAAR_URL;
+  }
+  // per-LOCK bazaar link — mirrors desktop _open_bazaar_for_lock: deep-links into
+  // the Lock Bazaar's own search for the lock (lands ON the bazaar at lpulocks.com,
+  // not the lpubelts share/info page). e.g. ...#/lockbazaar?search=assa+700
+  function bazaarSearchUrl(name){
+    const q = encodeURIComponent(String(name||"").trim()).replace(/%20/g, "+");
+    return q ? `${BAZAAR_URL}?search=${q}` : BAZAAR_URL;
   }
   // ---- feed → flat listings (desktop accepts list, {listings}, nested validListings)
   function collectListings(data){
@@ -702,7 +677,7 @@ const LHC = (() => {
           canonicalBelt, dispBelt, rarityStars, starsTxt, lpuSlug, mapCatalog,
           foldLight, tokensOf, matchTokens, splitCatalogNames,
           bzSeller, bzMake, bzModel, bzBelt, bzLockName, bzPrice,
-          bzEntryKey, bzListingUrl, collectListings, isLockListing, matchBazaar,
+          bzEntryKey, bzListingUrl, bazaarSearchUrl, collectListings, isLockListing, matchBazaar,
           parseLeaderboard, rankLeaders, isNoDisplayName, extractUid,
           fsValue, decodeFields, profileFromFields,
           fetchJson, fetchFirstJson, anonSignIn, fsGetCollectionDoc, fsBatchGet,
@@ -736,8 +711,6 @@ const S = {
   catalog: [], byId: new Map(),
   own: new Set(store.get("own", [])),
   wish: new Set(store.get("wish", [])),
-  prio: new Set(store.get("prio", [])),          // catalog lock ids
-  customs: store.get("customs", []),             // [{key,name}]
   profile: store.get("profile", null),           // {uid,url,ts,ownN,wishN}
   listings: [], bzMatch: null,                   // {byLock,rowLock}
   bzSnapshot: new Set(store.get("bzsnap", [])),  // entry keys already seen
@@ -758,7 +731,7 @@ function setFeed(name, st, detail){
     const mark = v.st === "ok" ? "✓" : v.st === "fail" ? "✗" : "…";
     return `<span class="pill ${cls}" title="${esc(v.detail)}">${FEED_LABELS[k]} ${mark}</span>`;
   }).join("");
-  $("feedPills").innerHTML = pills;
+  const _fp = $("feedPills"); if (_fp) _fp.innerHTML = pills;
   const fails = Object.entries(S.feeds).filter(([,v])=>v.st==="fail");
   $("hdrSub").textContent = fails.length
     ? fails.map(([k,v])=>`${FEED_LABELS[k]}: ${v.detail}`).join("  ·  ")
@@ -909,7 +882,6 @@ const lockBadges = l => {
   let b = "";
   if (S.own.has(l.id)) b += `<span class="badge b-own">OWN</span>`;
   if (S.wish.has(l.id)) b += `<span class="badge b-wish">WISH</span>`;
-  if (S.prio.has(l.id)) b += `<span class="badge b-prio">PRIO</span>`;
   if (S.bzMatch && S.bzMatch.byLock.has(l.id)) b += `<span class="badge b-bz">BAZAAR</span>`;
   return b;
 };
@@ -930,7 +902,6 @@ function filteredLocks(){
   let rows = S.catalog;
   if (show === "own")  rows = rows.filter(l => S.own.has(l.id));
   if (show === "wish") rows = rows.filter(l => S.wish.has(l.id));
-  if (show === "prio") rows = rows.filter(l => S.prio.has(l.id));
   if (S.beltFilter !== "All") rows = rows.filter(l => l.belt === S.beltFilter);
   if (q) rows = rows.filter(l => LHC.foldLight(l.name + " " + (l.version || "")).includes(q));
   return rows.slice().sort((a,b) =>
@@ -939,26 +910,11 @@ function filteredLocks(){
 let lockRenderToken = 0;
 function renderLocks(){
   const rows = filteredLocks();
-  const show = $("lockShow").value;
-  $("prioAddCard").style.display = (show === "prio") ? "" : "none";
-  const customs = (show === "prio") ? S.customs : [];
   $("lockCount").textContent =
     `${rows.length} lock${rows.length===1?"":"s"}` +
-    (customs.length ? ` + ${customs.length} custom` : "") +
     (S.beltFilter !== "All" ? ` · ${S.beltFilter}` : "");
   const ul = $("lockList");
   ul.innerHTML = "";
-  for (const c of customs) {
-    const li = document.createElement("li");
-    li.innerHTML = `<div class="thumb ph">⚙</div>` +
-      `<div class="grow"><div class="lname">${esc(c.name)}</div>` +
-      `<div class="lmeta"><span class="beltpill">custom</span></div></div>` +
-      `<div class="badges"><span class="badge b-prio">PRIO</span></div>`;
-    li.onclick = () => { if (confirm(`Remove custom priority “${c.name}”?`)) {
-      S.customs = S.customs.filter(x => x.key !== c.key);
-      store.set("customs", S.customs); renderLocks(); } };
-    ul.appendChild(li);
-  }
   const token = ++lockRenderToken;
   let i = 0;
   (function chunk(){
@@ -982,6 +938,14 @@ function renderLocks(){
     if (i < rows.length) requestAnimationFrame(chunk);
   })();
 }
+function openSheet(){ const s=$("sheet"); s.style.transition=""; s.style.transform=""; s.scrollTop=0; $("sheetWrap").classList.add("open"); }
+function closeSheet(){ $("sheetWrap").classList.remove("open"); const s=$("sheet"); s.style.transition=""; s.style.transform=""; }
+function setupSheetSwipe(){
+  const s=$("sheet"); let y0=null, dy=0;
+  s.addEventListener("touchstart", e => { if (s.scrollTop>0){ y0=null; return; } y0=e.touches[0].clientY; dy=0; s.style.transition=""; }, {passive:true});
+  s.addEventListener("touchmove", e => { if (y0===null) return; dy=e.touches[0].clientY-y0; if (dy>0) s.style.transform="translateY("+dy+"px)"; }, {passive:true});
+  s.addEventListener("touchend", () => { if (y0===null) return; if (dy>90) closeSheet(); else { s.style.transition="transform .2s ease"; s.style.transform=""; } y0=null; }, {passive:true});
+}
 function openLock(l){
   const rowsIdx = (S.bzMatch && S.bzMatch.byLock.get(l.id)) || [];
   const bz = rowsIdx.map(i => S.listings[i]);
@@ -998,19 +962,10 @@ function openLock(l){
     `<div style="margin-top:6px">${lockBadges(l)}</div>` +
     `<div class="row" style="margin-top:12px">` +
     `<a class="grow" href="${esc(l.page)}" target="_blank" rel="noopener"><button style="width:100%">LPU page</button></a>` +
-    (bz.length ? `<a class="grow" href="${esc(LHC.bzListingUrl(bz[0], l))}" target="_blank" rel="noopener"><button style="width:100%">Lock Bazaar</button></a>` : "") +
-    `</div>` +
-    `<div class="row" style="margin-top:8px">` +
-    `<button class="grow" id="prioToggle">${S.prio.has(l.id) ? "★ Remove from priorities" : "☆ Mark as priority"}</button>` +
     `</div>` +
     (bz.length ? `<div class="grphead">For sale on the Bazaar (${bz.length})</div>` +
       bz.map(e => bzRowHtml(e, l)).join("") : "");
-  $("prioToggle").onclick = () => {
-    if (S.prio.has(l.id)) S.prio.delete(l.id); else S.prio.add(l.id);
-    store.set("prio", [...S.prio]);
-    openLock(l); renderLocks();
-  };
-  $("sheetWrap").classList.add("open");
+  openSheet();
 }
 function bzRowHtml(e, matchedLock){
   const ships = Array.isArray(e.shipsTo) ? e.shipsTo.length + " regions" : (e.shipsTo||"");
@@ -1020,7 +975,7 @@ function bzRowHtml(e, matchedLock){
     e.country ? esc(String(e.country)) : "", ships ? esc(ships) : ""].filter(Boolean);
   return `<div class="bzrow"><b>${esc(LHC.bzSeller(e)||"?")}</b> · ${bits.join(" · ")}` +
     (e.notes ? `<div class="muted" style="margin-top:3px">${esc(String(e.notes))}</div>` : "") +
-    `<div style="margin-top:4px"><a href="${esc(LHC.bzListingUrl(e, matchedLock))}" target="_blank" rel="noopener">open listing ↗</a></div></div>`;
+    `<div style="margin-top:4px"><a href="${esc(LHC.bazaarSearchUrl(matchedLock ? matchedLock.name : ""))}" target="_blank" rel="noopener">on Lock Bazaar ↗</a></div></div>`;
 }
 
 /* ---------- COLLECTION view ---------- */
@@ -1031,8 +986,7 @@ function renderCollection(){
   const pct = (100*ownN/total).toFixed(1);
   $("collTiles").innerHTML =
     `<div class="tile"><div class="n">${ownN}</div><div class="l">Owned</div><div class="s">${pct}% of ${S.catalog.length}</div></div>` +
-    `<div class="tile"><div class="n">${[...S.wish].filter(id=>S.byId.has(id)).length}</div><div class="l">Wishlist</div><div class="s">&nbsp;</div></div>` +
-    `<div class="tile"><div class="n">${S.prio.size + S.customs.length}</div><div class="l">Priorities</div><div class="s">on this phone</div></div>`;
+    `<div class="tile"><div class="n">${[...S.wish].filter(id=>S.byId.has(id)).length}</div><div class="l">Wishlist</div><div class="s">&nbsp;</div></div>`;
   const byBelt = {}, ownBelt = {};
   for (const b of LHC.CANONICAL_BELTS) { byBelt[b]=0; ownBelt[b]=0; }
   for (const l of S.catalog) { byBelt[l.belt]++; if (S.own.has(l.id)) ownBelt[l.belt]++; }
@@ -1077,17 +1031,24 @@ async function runCompare(){
       throw new Error(m);
     }
     const theirs = LHC.profileFromFields(fields);
-    if (!theirs.own.size) throw new Error("that profile has no owned locks saved (or it's private)");
-    const mine = S.own;
-    const both = [], onlyThem = [], onlyYou = [];
-    for (const l of S.catalog) {
-      const m = mine.has(l.id), t = theirs.own.has(l.id);
-      if (m && t) both.push(l); else if (t) onlyThem.push(l); else if (m) onlyYou.push(l);
-    }
-    S.cmpResults = {uid, both, onlyThem, onlyYou};
-    msg.textContent = `They own ${theirs.own.size} · you own ${mine.size} · shared ${both.length}` +
-      (theirs.anon ? "  (profile is marked anonymous — no name shown)" : "");
-    msg.className = "msg ok";
+    if (!theirs.own.size && !theirs.wish.size)
+      throw new Error("that profile has no owned or wishlist locks saved (or it's private)");
+    // Trade check — mirrors the desktop app's Compare (_compare_worker):
+    //   theyHave = THEIR owned ∩ YOUR wishlist  (locks you want that they have)
+    //   youHave  = YOUR owned  ∩ THEIR wishlist  (locks they want that you have)
+    const lk = id => S.byId.get(id);
+    const bySort = a => a.filter(Boolean).sort((x,y) =>
+      (LHC.BELT_RANK[x.belt]-LHC.BELT_RANK[y.belt]) || x.name.localeCompare(y.name));
+    const theyHave = bySort([...theirs.own].filter(id => S.wish.has(id)).map(lk));
+    const youHave  = bySort([...S.own].filter(id => theirs.wish.has(id)).map(lk));
+    const nm = $("cmpUrl").value.match(/[?&]name=([^&]+)/);
+    const who = nm ? decodeURIComponent(nm[1]).replace(/_/g," ").trim() || "They" : "They";
+    const whoP = (who === "They") ? "their" : who + "’s";
+    S.cmpResults = {uid, who, theyHave, youHave};
+    msg.textContent = (theyHave.length || youHave.length)
+      ? `Trade check: they have ${theyHave.length} you want · you have ${youHave.length} they want`
+      : `No overlap — none of ${whoP} owned locks are on your wishlist, and nothing you own is on ${whoP} wishlist.`;
+    msg.className = "msg " + ((theyHave.length || youHave.length) ? "ok" : "");
     const sec = (title, arr) => arr.length
       ? `<div class="grphead">${title} (${arr.length})</div>` +
         arr.map(l => `<div class="orow"><div class="grow">${esc(l.name)}` +
@@ -1095,21 +1056,21 @@ async function runCompare(){
           `</div>${beltPill(l)}<span class="stars">${LHC.starsTxt(l.count)}</span></div>`).join("")
       : "";
     $("cmpOut").innerHTML =
-      sec("They have — you're missing", onlyThem) +
-      sec("You have — they don't", onlyYou) +
-      sec("You both own", both);
-    $("cmpCsv").disabled = false;
+      sec(`${who} has — on your wishlist`, theyHave) +
+      sec(`You have — on ${whoP} wishlist`, youHave) +
+      ((!theyHave.length && !youHave.length)
+        ? `<div class="muted" style="padding:8px">This shows locks you want that they own, and locks you own that they want. Sync your wishlist first if it's empty.</div>` : "");
+    $("cmpCsv").disabled = !(theyHave.length || youHave.length);
   } catch(ex) { msg.textContent = "Compare failed: " + ex.message; msg.className = "msg err"; }
   $("cmpBtn").disabled = false;
 }
 function cmpCsv(){
   if (!S.cmpResults) return;
-  const lines = [["status","lock","belt","collectors_owning"]];
+  const lines = [["direction","lock","belt","collectors_owning"]];
   const add = (st, arr) => arr.forEach(l =>
     lines.push([st, l.name, LHC.dispBelt(l.belt,l.beltFull), l.count ?? ""]));
-  add("they_have_you_missing", S.cmpResults.onlyThem);
-  add("you_have_they_dont", S.cmpResults.onlyYou);
-  add("both_own", S.cmpResults.both);
+  add("they_have_on_your_wishlist", S.cmpResults.theyHave);
+  add("you_have_on_their_wishlist", S.cmpResults.youHave);
   downloadCsv("lock-compare.csv", lines);
 }
 function downloadCsv(name, rows){
@@ -1145,7 +1106,9 @@ async function loadOwners(force){
   msg.textContent = `${ranked.length} collectors listed — reading their collections…`;
   msg.className = "msg"; prog.style.display = ""; prog.value = 0; prog.max = ranked.length;
   try {
-    const token = await LHC.anonSignIn();
+    // Guest sign-in is best-effort (anon auth may be disabled → ADMIN_ONLY_
+    // OPERATION); the reads work without a token, same as profile sync + desktop.
+    let token = null; try { token = await LHC.anonSignIn(); } catch (ex) {}
     const {map, failed} = await LHC.fsBatchGet(ranked.map(r=>r.uid), token,
       (done,total) => { prog.value = done; msg.textContent = `Reading collections… ${done}/${total}`; });
     S.owners = ranked.map(r => {
@@ -1209,7 +1172,6 @@ async function ownersSearch(){
     shown.forEach(o => S.ownersResults.push([l.name, LHC.dispBelt(l.belt,l.beltFull), o.name, o.ownCount]));
   }
   $("ownOut").innerHTML = out.join("");
-  $("ownCsv").disabled = !S.ownersResults.length;
 }
 async function wishlistTopOwners(){
   if (!(await loadOwners(false))) return;
@@ -1222,7 +1184,6 @@ async function wishlistTopOwners(){
         ` <span class="muted" style="font-size:12px">owns ${x.hit} of your wishlist</span>`)).join("")
      : `<div class="muted" style="padding:8px">No loaded collection owns any of your wishlist locks.</div>`);
   S.ownersResults = scored.map(x => ["wishlist_top", "", x.o.name, x.hit]);
-  $("ownCsv").disabled = !scored.length;
 }
 function bazaarTopSellers(){
   if (!S.bzMatch) { $("ownOut").innerHTML = `<div class="muted" style="padding:8px">Bazaar feed didn't load.</div>`; return; }
@@ -1247,53 +1208,6 @@ function bazaarTopSellers(){
       `<span class="count">${t.n} wishlist lock${t.n===1?"":"s"}</span></div>`).join("")
      : `<div class="muted" style="padding:8px">None of your wishlist locks are on the Bazaar right now.</div>`);
   S.ownersResults = top.map(t => ["bazaar_top_seller", "", t.s, t.n]);
-  $("ownCsv").disabled = !top.length;
-}
-
-/* ---------- BAZAAR view ---------- */
-function renderBazaar(){
-  const q = LHC.foldLight($("bzFind").value);
-  const mode = $("bzMode").value;
-  // wish/own membership must consider EVERY lock a row matched (byLock),
-  // not just its display label — catalog twins ("EVVA Dual" ×3) would
-  // otherwise let a wishlist listing slip past the filter.
-  const rowWished = new Set(), rowOwned = new Set();
-  if (S.bzMatch) for (const [lockId, idxs] of S.bzMatch.byLock) {
-    if (S.wish.has(lockId)) for (const i of idxs) rowWished.add(i);
-    if (S.own.has(lockId)) for (const i of idxs) rowOwned.add(i);
-  }
-  const rows = [];
-  S.listings.forEach((e, i) => {
-    if (!LHC.isLockListing(e)) return;
-    const lock = S.bzMatch ? S.bzMatch.rowLock.get(i) : null;
-    const title = lock ? lock.name :
-      ((LHC.bzMake(e)+" "+LHC.bzModel(e)).trim() || LHC.bzLockName(e) || "(unnamed)");
-    if (mode === "new" && !S.bzNew.has(LHC.bzEntryKey(e))) return;
-    if (mode === "wish" && !rowWished.has(i)) return;
-    if (q && !LHC.foldLight(title+" "+LHC.bzSeller(e)).includes(q)) return;
-    rows.push({e, i, lock, title, wished: rowWished.has(i), owned: rowOwned.has(i)});
-  });
-  rows.sort((a,b) => a.title.localeCompare(b.title) || LHC.bzSeller(a.e).localeCompare(LHC.bzSeller(b.e)));
-  $("bzInfo").textContent =
-    `${rows.length} listing${rows.length===1?"":"s"}` +
-    (S.bzNew.size ? ` · ${S.bzNew.size} new since last visit` : "") +
-    (mode === "wish" ? " · wishlist only" : "");
-  $("bzOut").innerHTML = rows.length ? rows.map(({e, lock, title, wished, owned}) => {
-    const isNew = S.bzNew.has(LHC.bzEntryKey(e));
-    return `<div class="orow" style="flex-direction:column;align-items:stretch">` +
-      `<div class="row"><div class="grow" style="font-weight:650">${esc(title)}` +
-      (isNew ? ` <span class="badge b-wish">NEW</span>` : "") +
-      (wished ? ` <span class="badge b-wish">WISH</span>` : "") +
-      (owned ? ` <span class="badge b-own">OWN</span>` : "") +
-      `</div>${lock ? beltPill(lock) : ""}</div>` +
-      bzRowHtml(e, lock) + `</div>`;
-  }).join("") : `<div class="muted" style="padding:10px">Nothing matches.</div>`;
-}
-function bzMarkSeen(){
-  const keys = S.listings.map(LHC.bzEntryKey);
-  S.bzSnapshot = new Set(keys); S.bzNew = new Set();
-  store.set("bzsnap", keys); store.set("bzseeded", true);
-  renderBazaar();
 }
 
 /* ---------- render-all + nav ---------- */
@@ -1303,7 +1217,6 @@ function renderAll(){
     `<option value="${esc(l.name + (l.version ? " (" + l.version + ")" : ""))}">`).join("");
   $("ownBelt").innerHTML = ["All belts"].concat(LHC.CANONICAL_BELTS)
     .map(b => `<option>${b}</option>`).join("");
-  renderBazaar();
 }
 function switchView(v){
   S.view = v;
@@ -1311,7 +1224,6 @@ function switchView(v){
   $("view-"+v).classList.add("active");
   for (const b of document.querySelectorAll("nav button")) b.classList.toggle("on", b.dataset.v === v);
   if (v === "collection") renderCollection();
-  if (v === "bazaar") renderBazaar();
   window.scrollTo(0,0);
 }
 
@@ -1322,9 +1234,8 @@ function buildNav(){
     collection: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>',
     compare: '<svg viewBox="0 0 24 24"><path d="M8 3v18M8 3l-4 4M8 3l4 4M16 21V3M16 21l-4-4M16 21l4-4"/></svg>',
     owners: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c.6-3.4 2.9-5 5.5-5s4.9 1.6 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M15.5 14.6c2.6.2 4.3 1.7 4.9 4.4"/></svg>',
-    bazaar: '<svg viewBox="0 0 24 24"><path d="M4 9l1.2-4h13.6L20 9M4 9v10a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9M4 9h16M10 13h4"/></svg>',
   };
-  const labels = {locks:"Locks", collection:"Collection", compare:"Compare", owners:"Owners", bazaar:"Bazaar"};
+  const labels = {locks:"Locks", collection:"Collection", compare:"Compare", owners:"Owners"};
   const nav = document.createElement("nav");
   nav.innerHTML = Object.keys(labels).map(v =>
     `<button data-v="${v}" ${v==="locks"?'class="on"':""}>${icons[v]}${labels[v]}</button>`).join("");
@@ -1337,15 +1248,6 @@ async function boot(){
   ownersCacheLoad();
   $("lockFind").oninput = renderLocks;
   $("lockShow").onchange = renderLocks;
-  $("customAdd").onclick = () => {
-    const name = $("customName").value.trim();
-    if (!name) return;
-    const key = "custom:" + LHC.foldLight(name).replace(/ /g,"_");
-    if (!S.customs.some(c => c.key === key)) {
-      S.customs.push({key, name}); store.set("customs", S.customs);
-    }
-    $("customName").value = ""; renderLocks();
-  };
   $("cmpBtn").onclick = runCompare;
   $("cmpCsv").onclick = cmpCsv;
   $("ownSearch").onclick = ownersSearch;
@@ -1353,15 +1255,9 @@ async function boot(){
   $("ownLoad").onclick = () => loadOwners(true).then(() => renderOwnersMeta());
   $("wishTop").onclick = wishlistTopOwners;
   $("bzTop").onclick = bazaarTopSellers;
-  $("ownCsv").onclick = () => downloadCsv("lock-owners.csv",
-      [["context","belt","collector","count"]].concat(S.ownersResults));
-  $("bzFind").oninput = renderBazaar;
-  $("bzMode").onchange = renderBazaar;
-  $("bzSeen").onclick = bzMarkSeen;
-  $("sheetBack").onclick = () => $("sheetWrap").classList.remove("open");
-  $("feedRetry").onclick = () => { setFeed("catalog","…"); setFeed("stats","…");
-    setFeed("bazaar","…"); setFeed("leaderboard","…");
-    loadCatalog(true).then(() => { renderAll(); loadBazaar().then(renderAll); loadLeaderboard(); }); };
+  $("sheetBack").onclick = closeSheet;
+  setupSheetSwipe();
+  // (feed-status pills + "Re-test data feeds" button removed per request)
   $("wipeBtn").onclick = () => {
     if (!confirm("Clear everything saved on this phone (profile, priorities, caches)?")) return;
     for (const k of ["own","wish","prio","customs","profile","catalog","owners","bzsnap","bzseeded"]) store.del(k);
