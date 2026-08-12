@@ -258,7 +258,7 @@ a.plain{color:var(--accent); text-decoration:none}
 <!-- onboarding -->
 <div id="onboard">
   <h1>Lock <span>Hunter</span></h1>
-  <div class="muted" style="margin-bottom:16px">phone companion · v1.0.6</div>
+  <div class="muted" style="margin-bottom:16px">phone companion · v1.0.7</div>
   <div class="card">
     <h2>Sync your collection</h2>
     <div class="muted" style="margin-bottom:10px">
@@ -285,7 +285,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.0.6";
+  const VERSION = "1.0.7";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -1202,7 +1202,7 @@ async function wishlistTopOwners(){
     .filter(x => x.hit > 0).sort((a,b) => b.hit - a.hit).slice(0,10);
   $("ownOut").innerHTML = `<div class="grphead">Top wishlist owners — who to approach for a trade</div>` +
     (scored.length ? scored.map(x => ownerRow(x.o,
-        ` <span class="muted" style="font-size:12px">owns ${x.hit} of your wishlist</span>`, "bazaar")).join("")
+        ` <span class="muted" style="font-size:12px">owns ${x.hit} of your wishlist</span>`, "compare")).join("")
      : `<div class="muted" style="padding:8px">No loaded collection owns any of your wishlist locks.</div>`);
   S.ownersResults = scored.map(x => ["wishlist_top", "", x.o.name, x.hit]);
 }
