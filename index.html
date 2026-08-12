@@ -284,7 +284,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.0.9";
+  const VERSION = "1.0.10";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -419,10 +419,22 @@ const LHC = (() => {
     ["cawi","cawi"],["burg","burg"],["assa","assa"],["kaba","kaba"],["emha","emha"],
     ["mtl","mtl"],["s&g","sng"],["sng","sng"],["zi","zi"]
   ];
+  const _canonMemo = new Map();
   function canonAliases(folded){
+    const hit = _canonMemo.get(folded);
+    if (hit !== undefined) return hit;
+    let out = folded;
     for (const [alias, canon] of ALIAS_CANON)
-      folded = folded.replace(new RegExp("(?<![a-z0-9])"+escRe(alias)+"(?![a-z0-9])","g"), canon);
-    return folded;
+      out = out.replace(new RegExp("(?<![a-z0-9])"+escRe(alias)+"(?![a-z0-9])","g"), canon);
+    if (_canonMemo.size > 8000) _canonMemo.clear();
+    _canonMemo.set(folded, out);
+    return out;
+  }
+  const _shortReMemo = new Map();
+  function shortRe(tok){
+    let re = _shortReMemo.get(tok);
+    if (!re) { re = new RegExp("(?<![a-z0-9])"+escRe(tok)+"(?![a-z0-9])"); _shortReMemo.set(tok, re); }
+    return re;
   }
   // ---- _lock_tokens (L1863) — fold → canon-alias → size-glue → split; keep
   // single-char model designators (digit always, letter only if UPPERCASE in
@@ -458,33 +470,45 @@ const LHC = (() => {
   // ---- _match_tokens (L1887) — EVERY token present, size/alias-tolerant; short
   // tokens (≤2) must stand alone on boundaries; long alpha tokens can't hide
   // inside a part number; non-ASCII tokens are checked against the raw title.
-  // Pass the RAW row text — matchTokens applies the same fold→canon→size pipeline.
-  function matchTokens(title, toks){
-    if (!title || !toks.length) return false;
-    const tlRaw = canonAliases(fold(title));
-    const tl = normSizes(tlRaw);
-    let tlNative = null;
+  // Split into foldTitle (the expensive fold→canon→size, run ONCE per row by
+  // matchBazaar) + matchPrepared (per-token check), so the O(rows×locks×comps)
+  // inner loop no longer re-folds every title. Public matchTokens = the two
+  // composed, keeping the exact desktop-equivalent API used by the tests.
+  function foldTitle(title){
+    const raw = String(title == null ? "" : title);
+    const tlRaw = canonAliases(fold(raw));
+    return { raw, tlRaw, tl: normSizes(tlRaw) };
+  }
+  function matchPrepared(P, toks){
+    if (!toks || !toks.length) return false;
+    let tlNative = null, words = null;
     for (const tok of toks){
       if (/[^\x00-\x7f]/.test(tok)){
-        if (tlNative === null) tlNative = String(title).toLowerCase();
+        if (tlNative === null) tlNative = P.raw.toLowerCase();
         if (tlNative.includes(tok)) continue;
         return false;
       }
       const tk = normSizes(canonAliases(tok));
       if (tok.length <= 2){
-        const re = new RegExp("(?<![a-z0-9])"+escRe(tok)+"(?![a-z0-9])");
-        if (re.test(tl) || re.test(tlRaw)) continue;
-        if (tk !== tok && tl.includes(tk)) continue;
+        const re = shortRe(tok);
+        if (re.test(P.tl) || re.test(P.tlRaw)) continue;
+        if (tk !== tok && P.tl.includes(tk)) continue;
         return false;
       }
-      if (tl.includes(tk) || tl.includes(tok)){
-        if (/^[a-z]+$/.test(tok) && !titleWords(tl).has(tok) && onlyInPartNumber(tok, tl, toks))
-          return false;
+      if (P.tl.includes(tk) || P.tl.includes(tok)){
+        if (/^[a-z]+$/.test(tok)){
+          if (words === null) words = titleWords(P.tl);
+          if (!words.has(tok) && onlyInPartNumber(tok, P.tl, toks)) return false;
+        }
         continue;
       }
       return false;
     }
     return true;
+  }
+  function matchTokens(title, toks){
+    if (!title || !toks || !toks.length) return false;
+    return matchPrepared(foldTitle(title), toks);
   }
   // ---- _split_catalog_names (L562-605) — EXACT port, incl. the
   // numeric-fragment reattach ("ABUS 74/40" stays one lock) and keeping the
@@ -588,16 +612,19 @@ const LHC = (() => {
       if (!isLockListing(row)) return;
       const lbn = bzLockName(row);
       const exact = lbn ? (byFold.get(foldLight(lbn)) || null) : null;
-      const text = fold(bzMake(row)+" "+bzModel(row)+" "+lbn);
+      // fold+canon+size the row text ONCE here (not per lock) — see foldTitle/matchPrepared.
+      // Fold first so P mirrors the desktop's bazaar_entries_for_lock, which token-matches
+      // against _fold(rowtext) (non-ASCII already stripped) — keeps the match set identical.
+      const P = foldTitle(fold(bzMake(row)+" "+bzModel(row)+" "+lbn));
       const rowBelt = bzBelt(row).toLowerCase();
       let best = null, bestScore = -1;
       const hits = new Set();
-      if (text) {
+      if (P.tl) {
         for (const {lock, beltWord, comps} of lockToks) {
           if (beltWord && rowBelt && !rowBelt.includes(beltWord)) continue;
           let score = -1;
           for (const toks of comps)
-            if (matchTokens(text, toks) && toks.length > score) score = toks.length;
+            if (matchPrepared(P, toks) && toks.length > score) score = toks.length;
           if (score >= 0) {
             hits.add(lock);
             if (score > bestScore ||
