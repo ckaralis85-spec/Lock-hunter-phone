@@ -284,7 +284,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.2.0";
+  const VERSION = "1.3.1";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -1433,7 +1433,7 @@ async function lanSearch(lock, belt){
       try { s = await (await lanApi("/api/status?job=" + encodeURIComponent(job))).json(); }
       catch(e){ continue; }
       if (s.progress && s.progress.length) msg.textContent = s.progress[s.progress.length - 1];
-      if (s.state === "done"){ renderLanResults(s.results || []); msg.textContent = (s.count || 0) + " result(s)."; msg.className = "msg ok"; return; }
+      if (s.state === "done"){ LAN.lastRows = s.results || []; renderLanResults(LAN.lastRows); msg.textContent = lanCountLine(LAN.lastRows); msg.className = "msg ok"; return; }
       if (s.state === "error"){ msg.textContent = "Search failed on the PC. " + ((s.progress || []).slice(-1)[0] || ""); msg.className = "msg err"; return; }
     }
     msg.textContent = "Search timed out."; msg.className = "msg err";
@@ -1442,11 +1442,29 @@ async function lanSearch(lock, belt){
     LAN.ok = false;
   } finally { $("lanGo").disabled = false; }
 }
+function lanFlagged(rows){ return (rows || []).some(r => r && typeof r.lockish === "boolean"); }
+function lanLocksOnly(){ const el = $("lanLockOnly"); return !el || el.checked; }
+function lanVisibleRows(rows){
+  if (!rows) return [];
+  if (lanLocksOnly() && lanFlagged(rows)) return rows.filter(r => r && r.lockish !== false);
+  return rows;
+}
+function lanCountLine(rows){
+  const all = (rows || []).length, vis = lanVisibleRows(rows).length;
+  if (!lanFlagged(rows)) return all + " result(s).";
+  if (lanLocksOnly() && vis !== all) return vis + " lock result(s) · " + (all - vis) + " non-lock(s) hidden.";
+  return all + " result(s) (" + (rows.filter(r => r && r.lockish !== false).length) + " locks).";
+}
 function renderLanResults(rows){
   const out = $("lanOut");
+  const flagged = lanFlagged(rows);
+  const shown = lanVisibleRows(rows);
+  const note = (!flagged && rows && rows.length && lanLocksOnly())
+    ? `<div class="muted" style="padding:4px 2px;font-size:12px">Locks-only needs Lock Hunter v6.2.1+ on your PC — showing everything.</div>` : "";
   if (!rows || !rows.length){ out.innerHTML = `<div class="muted" style="padding:8px 2px">No listings found.</div>`; return; }
+  if (!shown.length){ out.innerHTML = note + `<div class="muted" style="padding:8px 2px">No lock listings — untick “Locks only” to see the ` + rows.length + ` other result(s).</div>`; return; }
   const bySite = new Map();
-  for (const r of rows){ const s = String((r && r.site) || "Other"); if (!bySite.has(s)) bySite.set(s, []); bySite.get(s).push(r); }
+  for (const r of shown){ const s = String((r && r.site) || "Other"); if (!bySite.has(s)) bySite.set(s, []); bySite.get(s).push(r); }
   let html = "";
   for (const [site, list] of bySite){
     html += `<div class="grphead">${esc(site)} (${list.length})</div>`;
@@ -1455,14 +1473,18 @@ function renderLanResults(rows){
       const rawUrl = String((r && r.url) || "");
       const url = /^https?:\/\//i.test(rawUrl) ? rawUrl : "";   // only real http(s) links
       const title = esc(String((r && r.title) || "(untitled listing)"));
+      const usd = (typeof r.usd === "number" && isFinite(r.usd)
+                   && price.indexOf("$") < 0)
+        ? ` · <span class="p">$` + r.usd.toFixed(2) + `</span>` : "";
       html += `<div class="bzrow">` +
         (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${title}</a>` : `<span>${title}</span>`) +
         (price ? ` · <span class="p">${esc(price)}</span>` : "") +
+        usd +
         (r.condition ? ` · <span class="muted">${esc(String(r.condition))}</span>` : "") +
         `</div>`;
     }
   }
-  out.innerHTML = html;
+  out.innerHTML = note + html;
 }
 function lanInit(){
   const m = /[#&]t=([A-Za-z0-9]+)/.exec(location.hash || "");
@@ -1480,9 +1502,17 @@ function lanInit(){
       `<button id="lanTokGo">Connect</button></div>` +
     `<input id="lanQ" type="search" placeholder="Lock name…" autocapitalize="off" autocomplete="off">` +
     `<div class="row" style="margin-top:10px"><button class="primary grow" id="lanGo">Search</button></div>` +
+    `<label class="row" style="margin-top:8px;gap:8px;align-items:center;font-size:14px;cursor:pointer"><input type="checkbox" id="lanLockOnly"> Locks only <span class="muted" style="font-size:12px">(same filter as the PC app)</span></label>` +
     `<div class="msg" id="lanMsg" style="margin-top:8px"></div>` +
     `<div id="lanOut" style="margin-top:6px"></div></div>`;
   document.querySelector("main").appendChild(sec);
+  const lo = $("lanLockOnly");
+  lo.checked = store.get("lan_lockonly", "1") !== "0";
+  lo.onchange = () => {
+    store.set("lan_lockonly", lo.checked ? "1" : "0");
+    if (LAN.lastRows){ renderLanResults(LAN.lastRows);
+      const m = $("lanMsg"); if (m && m.className.indexOf("err") < 0){ m.textContent = lanCountLine(LAN.lastRows); m.className = "msg ok"; } }
+  };
   $("lanGo").onclick = () => lanSearch($("lanQ").value, "");
   $("lanQ").addEventListener("keydown", e => { if (e.key === "Enter") lanSearch($("lanQ").value, ""); });
   $("lanTokGo").onclick = () => {
@@ -1495,6 +1525,8 @@ function lanInit(){
     $("lanQ").value = b.dataset.lock || "";
     lanSearch(b.dataset.lock, b.dataset.belt || "");
   });
+  try { window.__lh_lan = { render: renderLanResults, state: LAN,
+                            countLine: lanCountLine }; } catch(e){}
   lanHello();
 }
 /* ========================== end LAN live-search mode ==================== */
