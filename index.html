@@ -265,7 +265,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.8.1";
+  const VERSION = "1.8.3";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -374,28 +374,41 @@ const LHC = (() => {
   function fold(s){
     s = String(s||"");
     for (const [a,b] of FOLD_MAP) s = s.split(a).join(b);
-    s = s.normalize("NFKD").replace(/[̀-ͯ]/g,"");
-    s = s.replace(/[^\x00-\x7f]/g," ");
+    // v1.8.2: drop EVERY combining mark (desktop uses unicodedata.combining,
+    // which is not limited to U+0300-U+036F) and turn C0 controls into spaces
+    // (a title can carry one, and \x01 is the size-seam marker below).
+    s = s.normalize("NFKD").replace(/\p{M}/gu,"");
+    s = s.replace(/[^\x00-\x7f]/g," ").replace(/[\x00-\x1f]/g," ");
     return s.replace(/\s+/g," ").trim().toLowerCase();
   }
-  // ---- _norm_sizes (L1790): glue digit<delim>digit (83/45, 83-45, 83x45 → 8345)
-  function normSizes(s){
-    return String(s).replace(/(?<=\d)\s*[/xX×✕-]\s*(?=\d)/g, "");
+  // ---- _norm_sizes: glue digit<delim>digit (83/45, 83-45, 83x45 → 8345).
+  // `seam` (v1.8.2, desktop v7.0.2) leaves a marker where a delimiter was
+  // removed, for the matching copy only — see tokenOccurs.
+  const SIZE_SEAM = "\u0001";
+  const SIZE_DELIM_RE = /(?<=\d)\s*[/xX×✕-]\s*(?=\d)/g;
+  function normSizes(s, seam){
+    return String(s).replace(SIZE_DELIM_RE, seam === undefined ? "" : seam);
   }
   // ---- brand aliases → one canonical token, from desktop _BRAND_ALIASES /
   // _ALIAS_CANON (L1803-1849). Applied longest-alias-first with alnum boundary
   // guards so multi-word brands survive tokenizing (Mul-T-Lock→mtl,
   // "Sargent and Greenleaf"→sng). List mirrors the desktop's computed canon.
+  // longest alias first, ties alphabetical — the desktop's _ALIAS_CANON order
   const ALIAS_CANON = [
     ["sargent and greenleaf","sng"],["sargent & greenleaf","sng"],["sargent greenleaf","sng"],
-    ["corbin russwin","corbin"],["abloy protec2","protec2"],["carl wittkopp","cawi"],
-    ["burg-wachter","burg"],["burg wachter","burg"],["abloy protec","protec2"],["burgwachter","burg"],
-    ["mul-t-lock","mtl"],["mul t lock","mtl"],["zeiss ikon","zi"],["assa abloy","assa"],["dorma kaba","kaba"],
-    ["mult-lock","mtl"],["dormakaba","kaba"],["multlock","mtl"],["wittkopp","cawi"],["protec 2","protec2"],
-    ["s and g","sng"],["zi ikon","zi"],["russwin","corbin"],["protec2","protec2"],
-    ["emhart","emha"],["corbin","corbin"],["s & g","sng"],["zeiss","zi"],
-    ["cawi","cawi"],["burg","burg"],["assa","assa"],["kaba","kaba"],["emha","emha"],
-    ["mtl","mtl"],["s&g","sng"],["sng","sng"],["zi","zi"]
+    ["corbin russwin","corbin"],["abloy protec2","protec2"],["burg waechter","burg"],
+    ["burg-waechter","burg"],["carl wittkopp","cawi"],["abloy protec","protec2"],
+    ["burg wachter","burg"],["burg-wachter","burg"],["burgwaechter","burg"],
+    ["burgwachter","burg"],["assa abloy","assa"],["dorma kaba","kaba"],
+    ["mul t lock","mtl"],["mul-t-lock","mtl"],["zeiss ikon","zi"],
+    ["assaabloy","assa"],["dormakaba","kaba"],["mult-lock","mtl"],
+    ["multlock","mtl"],["protec 2","protec2"],["wittkopp","cawi"],
+    ["protec2","protec2"],["russwin","corbin"],["s and g","sng"],
+    ["zi ikon","zi"],["corbin","corbin"],["emhart","emha"],
+    ["s & g","sng"],["zeiss","zi"],["assa","assa"],
+    ["burg","burg"],["cawi","cawi"],["emha","emha"],
+    ["kaba","kaba"],["mtl","mtl"],["s&g","sng"],
+    ["sng","sng"],["zi","zi"]
   ];
   const _canonMemo = new Map();
   function canonAliases(folded){
@@ -411,7 +424,11 @@ const LHC = (() => {
   const _shortReMemo = new Map();
   function shortRe(tok){
     let re = _shortReMemo.get(tok);
-    if (!re) { re = new RegExp("(?<![a-z0-9])"+escRe(tok)+"(?![a-z0-9])"); _shortReMemo.set(tok, re); }
+    if (!re) {
+      if (_shortReMemo.size > 4000) _shortReMemo.clear();
+      re = new RegExp("(?<![a-z0-9])"+escRe(tok)+"(?![a-z0-9])");
+      _shortReMemo.set(tok, re);
+    }
     return re;
   }
   // ---- _lock_tokens (L1863) — fold → canon-alias → size-glue → split; keep
@@ -424,8 +441,11 @@ const LHC = (() => {
     for (const t of name.split(/[^0-9A-Za-z]+/))
       if (t.length === 1 && (/[0-9]/.test(t) || t === t.toUpperCase())) keep.add(t.toLowerCase());
     const toks = prepared.split(/[^a-z0-9]+/).filter(t => t && (t.length > 1 || keep.has(t)));
+    // v1.8.2 (desktop v7.0.2): a non-Latin word rides along as its own token
+    // ONLY when fold() erases it (CJK, Cyrillic…); an accented Latin word
+    // ('Wächter') is already in toks as 'wachter' and must not be a literal too.
     for (const t of name.toLowerCase().split(/[^\p{L}\p{N}_]+/u))
-      if (t.length > 1 && /[^\x00-\x7f]/.test(t)) toks.push(t);
+      if (t.length > 1 && /[^\x00-\x7f]/.test(t) && !fold(t)) toks.push(t);
     return toks;
   }
   const titleWords = tl => new Set(String(tl).split(/[^a-z0-9]+/));
@@ -455,7 +475,10 @@ const LHC = (() => {
   function foldTitle(title){
     const raw = String(title == null ? "" : title);
     const tlRaw = canonAliases(fold(raw));
-    return { raw, tlRaw, tl: normSizes(tlRaw) };
+    const tl = normSizes(tlRaw);
+    // seam copy: equal to tl when the title had no size delimiters (usual case)
+    const tlSeam = tl.length !== tlRaw.length ? normSizes(tlRaw, SIZE_SEAM) : tl;
+    return { raw, tlRaw, tl, tlSeam };
   }
   function matchPrepared(P, toks){
     if (!toks || !toks.length) return false;
@@ -470,10 +493,13 @@ const LHC = (() => {
       if (tok.length <= 2){
         const re = shortRe(tok);
         if (re.test(P.tl) || re.test(P.tlRaw)) continue;
+        // seam copy too (v1.8.2): "Mul-T-Lock 7X7 x 2" glues to "772", where
+        // the boundary would look broken; in the seam copy the join is marked
+        if (P.tlSeam !== P.tl && seamRescues(tok, P.tlSeam)) continue;
         if (tk !== tok && P.tl.includes(tk)) continue;
         return false;
       }
-      if (P.tl.includes(tk) || P.tl.includes(tok)){
+      if (tokenOccurs(tok, tk, P.tl, toks, P.tlSeam)){
         if (/^[a-z]+$/.test(tok)){
           if (words === null) words = titleWords(P.tl);
           if (!words.has(tok) && onlyInPartNumber(tok, P.tl, toks)) return false;
@@ -483,6 +509,158 @@ const LHC = (() => {
       return false;
     }
     return true;
+  }
+  // ---- _LOOSE_TOKENS / _COMPACT_FILLER / _compact_spelling / _token_occurs
+  // (desktop v7.0.2, A4): boundary-aware presence test for tokens of 3+ chars.
+  // Generic lock nouns and name fillers keep the old anywhere rule; brand and
+  // model tokens must stand on their own — no digit glued to a digit end
+  // ("600" is not in "6000"), letters glued to a letter end only when the whole
+  // word is a compact spelling of this lock ("masterlock", "yalelock") or a
+  // plural ("levers"). Sets are the desktop's, verbatim.
+  const LOOSE_TOKENS = new Set(["lock","locks","padlock","padlocks","key","keys","lever","levers",
+    "cylinder","cylinders","pin","pins","disc","disk","camlock","cabinet","door","rim","safe","mortice",
+    "mortise","deadbolt","tubular","dimple","wafer","chain","shackle","laminated","brass","steel","metal",
+    "combination","cutaway","tool","any","with","and","from","non","out","otherwise","unless","known",
+    "specified","formerly","model","brand","company","corporation","inc","tbd","unranked","generic",
+    "unknown","series","serie","system","systems","clone","look","double","dual","five","six","nine",
+    "round","level","code","magnetic","security","professional","commercial","residential","marine",
+    "home","house","profile","profil"]);
+  // Lock NOUNS only (desktop _COMPACT_FILLER, same order): the compound parts
+  // a seller may glue onto a brand. Name fillers ("any", "series"…) are NOT
+  // here — they are not compound parts.
+  const COMPACT_FILLER = [
+    "vorhangeschloss","hangeschloss","riippulukko","schlossern","cylinders","haengelas","lucchetti","lucchetto",
+    "schlosser","schlussel","candados","cilinder","cilindro","cylinder","cylindre","deadbolt",
+    "hangelas","hangslot","hengelas","padlocks","serrures","tabalukk","zylinder","avaimet",
+    "cabinet","cadenas","camlock","candado","hanglas","mortice","mortise","nycklar",
+    "padlock","schloss","serrure","shackle","tubular","chiave","chiavi","dimple",
+    "kilidi","kladka","klodka","klodki","levers","llaves","nokkel","nyckel",
+    "sloten","slotje","votmed","avain","chain","kilit","klucz","lakat",
+    "lasen","laset","lever","llave","locks","lukko","lukot","lukud",
+    "nogle","wafer","zamek","zamki","clef","cles","disc","disk",
+    "door","keys","klic","kluc","lock","lukk","pins","safe",
+    "slot","voti","cle","key","las","pin","rim","zar"
+  ];
+  const COMPACT_FILLER_SET = new Set(COMPACT_FILLER);
+  const COMPACT_LENS = [...new Set(COMPACT_FILLER.map(t => t.length))].sort((a,b) => b - a);
+  const COMPACT_MAX_WORD = 64;
+  const _compactMemo = new Map();
+  // ---- _compact_spelling (desktop v7.0.2): can the word be tiled end to end
+  // by this search's tokens, lock nouns and digit runs, with an optional
+  // 's'/'es' tail? (Stripping the pieces one by one depended on the order and
+  // shredded tokens that CONTAIN a lock noun — 'classic' holds 'las'.)
+  function compactSpelling(word, toks){
+    if (!word || word.length > COMPACT_MAX_WORD) return false;
+    const pieces = new Set(toks.filter(t => t && !/[^\x00-\x7f]/.test(t)));
+    const key = word + "\u0000" + toks.join(",");
+    const memo = _compactMemo.get(key);
+    if (memo !== undefined) return memo;
+    const lens = [...new Set([...pieces].map(t => t.length).concat(COMPACT_LENS))].sort((a,b) => b - a);
+    const n = word.length;
+    const reach = new Array(n + 1).fill(false);
+    reach[0] = true;
+    for (let i = 0; i < n; i++){
+      if (!reach[i]) continue;
+      let j = i;
+      while (j < n && word[j] >= "0" && word[j] <= "9") j++;
+      if (j > i) reach[j] = true;
+      for (const L of lens){
+        if (i + L > n) continue;
+        const part = word.slice(i, i + L);
+        if (pieces.has(part) || COMPACT_FILLER_SET.has(part)) reach[i + L] = true;
+      }
+    }
+    let out = reach[n];
+    if (!out) for (const t of ["es","s"]) if (word.endsWith(t) && reach[n - t.length]) { out = true; break; }
+    if (_compactMemo.size > 20000) _compactMemo.clear();
+    _compactMemo.set(key, out);
+    return out;
+  }
+  const isDigit = ch => ch >= "0" && ch <= "9";
+  const isAlpha = ch => ch >= "a" && ch <= "z";
+  const isAlnum = ch => isDigit(ch) || isAlpha(ch);
+  const _seamBoundMemo = new Map();
+  function seamBounded(tok){
+    let re = _seamBoundMemo.get(tok);
+    if (!re) {
+      if (_seamBoundMemo.size > 4000) _seamBoundMemo.clear();
+      // the lookBEHIND also refuses a seam: a token sitting AFTER a glue join
+      // is the second operand of a size/quantity ("Master Lock 150x2"), not
+      // the model (desktop v7.0.2 rv-2)
+      re = new RegExp("(?<![a-z0-9" + SIZE_SEAM + "])" + [...tok].map(escRe).join(SIZE_SEAM + "?") + "(?![a-z0-9])", "g");
+      _seamBoundMemo.set(tok, re);
+    }
+    re.lastIndex = 0;
+    return re;
+  }
+  // only a span that CONTAINS a seam says anything new — a plain occurrence
+  // was already judged against the glued and the raw title
+  function seamRescues(tok, hay){
+    const re = seamBounded(tok);
+    let m, i = 0;
+    while (i <= hay.length - tok.length){
+      re.lastIndex = i;
+      m = re.exec(hay);
+      if (!m) return false;
+      if (m[0].includes(SIZE_SEAM)) return true;
+      i = m.index + 1;
+    }
+    return false;
+  }
+  const _seamPatMemo = new Map();
+  function seamPattern(tok){
+    let re = _seamPatMemo.get(tok);
+    if (!re) {
+      if (_seamPatMemo.size > 4000) _seamPatMemo.clear();
+      re = new RegExp([...tok].map(escRe).join(SIZE_SEAM + "?"), "g");
+      _seamPatMemo.set(tok, re);
+    }
+    re.lastIndex = 0;
+    return re;
+  }
+  function tokenOccurs(tok, tk, tl, toks, tlSeam){
+    const cands = [...new Set([tok, tk])].filter(Boolean);
+    if (!cands.length) return false;
+    if (cands.some(c => LOOSE_TOKENS.has(c))) return cands.some(c => tl.includes(c));
+    if (!cands.some(c => tl.includes(c))) return false;
+    const hay = (tlSeam === undefined || tlSeam === null) ? tl : tlSeam;
+    const seamed = hay !== tl && hay.length !== tl.length;
+    for (const c of cands){
+      const headDigit = isDigit(c[0]), tailDigit = isDigit(c[c.length-1]);
+      const headAlpha = isAlpha(c[0]), tailAlpha = isAlpha(c[c.length-1]);
+      const spans = [];
+      if (seamed) {
+        const re = seamPattern(c);
+        let m;
+        while ((m = re.exec(hay)) !== null){
+          spans.push([m.index, m.index + m[0].length]);
+          re.lastIndex = m.index + 1;
+        }
+      } else {
+        let i = hay.indexOf(c);
+        while (i >= 0){ spans.push([i, i + c.length]); i = hay.indexOf(c, i + 1); }
+      }
+      let lastI = null, lastJ = null, lastOk = false;
+      for (const [a, b] of spans){
+        const left = a > 0 ? hay[a-1] : "";
+        const right = b < hay.length ? hay[b] : "";
+        let ok = !((headDigit && isDigit(left)) || (tailDigit && isDigit(right)));
+        if (ok && ((headAlpha && isAlpha(left)) || (tailAlpha && isAlpha(right)))){
+          // one verdict per enclosing word — a long unbroken word would
+          // otherwise be re-scanned for every span inside it
+          if (lastI === null || !(lastI <= a && b <= lastJ)){
+            let i2 = a, j2 = b;
+            while (i2 > 0 && (isAlnum(hay[i2-1]) || hay[i2-1] === SIZE_SEAM)) i2--;
+            while (j2 < hay.length && (isAlnum(hay[j2]) || hay[j2] === SIZE_SEAM)) j2++;
+            lastI = i2; lastJ = j2;
+            lastOk = compactSpelling(hay.slice(i2, j2).split(SIZE_SEAM).join(""), toks);
+          }
+          if (!lastOk) ok = false;
+        }
+        if (ok) return true;
+      }
+    }
+    return false;
   }
   function matchTokens(title, toks){
     if (!title || !toks || !toks.length) return false;
@@ -697,8 +875,6 @@ const S = {
   wish: new Set(store.get("wish", [])),
   profile: store.get("profile", null),           // {uid,url,ts,ownN,wishN}
   listings: [], bzMatch: null,                   // {byLock,rowLock}
-  bzSnapshot: new Set(store.get("bzsnap", [])),  // entry keys already seen
-  bzNew: new Set(),
   cmpResults: null,
   feeds: {catalog:{st:"…"}, stats:{st:"…"}, bazaar:{st:"…"}},
   view: "locks", beltFilter: "All",
@@ -776,14 +952,10 @@ async function loadBazaar(){
     if (!S.listings.length) throw new Error("feed empty/unexpected");
     setFeed("bazaar","ok",`${S.listings.length} listings`);
     if (S.catalog.length) S.bzMatch = LHC.matchBazaar(S.listings, S.catalog);
-    // new-since-last-visit — first ever run baselines silently (desktop rule)
-    const keys = S.listings.map(LHC.bzEntryKey);
-    if (!store.get("bzseeded", false)) {
-      S.bzSnapshot = new Set(keys);
-      store.set("bzsnap", keys); store.set("bzseeded", true);
-    } else {
-      S.bzNew = new Set(keys.filter(k => !S.bzSnapshot.has(k)));
-    }
+    // (v1.8.3, C3: the "new since last visit" bookkeeping that used to sit
+    // here was dead — the phone has had no Bazaar browse view since v1.0.3,
+    // so nothing ever rendered it, and the snapshot was written once and
+    // never advanced. Its stored keys are dropped at boot.)
   } catch(ex) { setFeed("bazaar","fail", ex.message); }
 }
 /* ---------- profile sync ---------- */
@@ -1117,7 +1289,20 @@ function buildNav(){
    Search tab that asks the PC to run its eBay + top-marketplaces search. All
    /api calls are same-origin (no mixed content) and token-gated. */
 const LAN_MODE = (location.protocol === "http:");
-const LAN = { token: "", ok: false, profile: null, rejected: false, helloPromise: null };
+const LAN = { token: "", ok: false, profile: null, rejected: false, helloPromise: null,
+              lastRows: null, rowsSeen: 0, pollGen: 0, pollOwner: 0,
+              batchView: false, urlToken: "", urlRetried: false,
+              lastOkAt: 0, connLine: "", jobDone: false, startErr: false };
+// rowsSeen: rows RECEIVED so far (v1.8.3, C2 — the delta cursor).
+// pollGen/pollOwner: lastRows, rowsSeen and the result area are shared by
+// every search and batch, so a poll loop whose reply lands after a NEWER job
+// has begun (the phone slept, a poll was retried, the priority card was
+// tapped the moment the PC finished) would append the old job's rows onto
+// the new one's empty list — and its cleanup would take the new job's Cancel
+// button away. Each loop takes the next pollGen when the PC accepts its job,
+// becomes the pollOwner, and stops the moment it isn't. A start the PC
+// refused (409 "already running") takes no number, so the loop that really
+// is running keeps the screen. pollOwner is 0 when nothing is polling.
 
 // v1.8.0: every call to the PC has a timeout (default 10 s; callers that
 // wait on LPU pass more) so a wrong address or a sleeping PC can't hang a
@@ -1131,7 +1316,15 @@ async function lanApi(path, opts, timeoutMs){
   let timer = null;
   if (ac){ o.signal = ac.signal; timer = setTimeout(() => ac.abort(), timeoutMs || 10000); }
   try {
-    return await fetch(path, o);
+    const res = await fetch(path, o);
+    // the PC answered (any status): the link is up. Every call counts, not
+    // just the status poll — otherwise "is anything getting through?" was
+    // blind to hello/collection/priority/hide and to the idle case. A 2xx
+    // also proves the pairing code is still good, so it clears a "Lost
+    // contact" banner (and the pairing box it re-opened) straight away.
+    LAN.lastOkAt = Date.now();
+    if (res.ok) lanLinkBackUp();
+    return res;
   } catch (ex) {
     const aborted = ex && (ex.name === "AbortError");
     throw new Error(aborted ? "no answer from your PC (timed out)"
@@ -1166,6 +1359,19 @@ async function _lanHello(autoSync){
     const r = await lanApi("/api/hello", null, 8000);
     if (r.status === 401){
       LAN.ok = false; LAN.rejected = true;
+      // v1.8.3 (C3): remember WHICH code the PC refused. The #t= fragment is
+      // kept in the address now, and a Home-screen icon always re-opens the
+      // address it was saved with — so a code that has since changed on the
+      // PC would overwrite the good one the user typed, on every launch.
+      if (LAN.token) store.set("phone_token_bad", LAN.token);
+      // we may have skipped the code in the address because it had been
+      // refused before; if the saved one is refused too, that memory is out
+      // of date — try the address's code once before giving up.
+      if (LAN.urlToken && LAN.urlToken !== LAN.token && !LAN.urlRetried){
+        LAN.urlRetried = true;
+        LAN.token = LAN.urlToken; store.set("phone_token", LAN.urlToken);
+        return await _lanHello(autoSync);
+      }
       setLanConn("Your PC rejected that pairing code — check it and try again.", "err");
       // first-run card still open with a stale saved code: offer the box right there
       const ob = $("onboard");
@@ -1178,7 +1384,12 @@ async function _lanHello(autoSync){
     if (!r.ok){ LAN.ok = false; setLanConn("PC reachable but returned HTTP " + r.status + ".", "err"); return; }
     const j = await r.json();
     LAN.ok = true; LAN.rejected = false; LAN.profile = j.profile || null;
-    setLanConn("Connected to Lock Hunter" + (j.version ? " v" + j.version : "") + " on your PC.", "ok");
+    // forget the "refused" mark only for the code that just worked — a
+    // different dead code (the one frozen into a Home-screen icon's address)
+    // has to stay remembered, or it would overwrite this one at next launch
+    if (store.get("phone_token_bad", "") === LAN.token) store.del("phone_token_bad");
+    LAN.connLine = "Connected to Lock Hunter" + (j.version ? " v" + j.version : "") + " on your PC.";
+    setLanConn(LAN.connLine, "ok");
     lanLoadPriority();
     // v1.7.0: the PC is the source of the collection now — refresh it on
     // every successful connect, so a desktop profile refresh shows here
@@ -1231,104 +1442,200 @@ async function lanLoadWishlistLine(){
 async function lanBatch(kind, n){
   const msg = $("lanMsg"), out = $("lanOut");
   if (n > 10 && !confirm(`Hunt all ${n} locks? Deep search takes a few minutes per lock — the PC keeps working even if the phone sleeps.`)) return;
-  out.innerHTML = ""; msg.textContent = "Starting the batch hunt on your PC…"; msg.className = "msg";
+  // the results area is cleared only once the PC has ACCEPTED the batch
+  // (v1.8.3): a 409 used to blank a running hunt's list, and with the new
+  // delta polling nothing redrew it until the next lock finished.
+  LAN.startErr = false;                    // see the note in lanSearch
+  msg.textContent = "Starting the batch hunt on your PC…"; msg.className = "msg";
   $("lanGo").disabled = true;
-  LAN.batchJob = null;
+  // LAN.batchJob is claimed only once the PC accepts (v1.8.3): clearing it
+  // here meant a refused second "Hunt all" left the RUNNING batch's Cancel
+  // button on screen with no job id behind it — the button did nothing.
+  let gen = 0;
   try {
     const r = await lanApi("/api/batch", {method:"POST",
       headers:{"Content-Type":"application/json"}, body: JSON.stringify({list: kind})});
-    if (r.status === 409){ msg.textContent = "A search is already running on the PC — wait for it to finish."; msg.className = "msg err"; return; }
-    if (!r.ok){ const e = await r.json().catch(()=>({})); msg.textContent = e.error || ("Couldn't start the batch (HTTP " + r.status + ")."); msg.className = "msg err"; return; }
+    if (r.status === 409){ msg.textContent = "A search is already running on the PC — wait for it to finish."; msg.className = "msg err"; LAN.startErr = true; return; }
+    if (!r.ok){ const e = await r.json().catch(()=>({})); msg.textContent = e.error || ("Couldn't start the batch (HTTP " + r.status + ")."); msg.className = "msg err"; LAN.startErr = true; return; }
     const {job, total} = await r.json();
     LAN.batchJob = job;
+    out.innerHTML = "";
+    LAN.lastRows = []; LAN.rowsSeen = 0; LAN.batchView = true; LAN.jobDone = false;
+    gen = LAN.pollOwner = ++LAN.pollGen;
     $("lanCancel").style.display = "";
-    let misses = 0;
+    let misses = 0, resyncs = 0;
     for (let i = 0; i < 14400; i++){
       await new Promise(res => setTimeout(res, 1000));
+      if (gen !== LAN.pollOwner) return;    // a newer search/batch owns the screen
       let s;
       try {
-        const sr = await lanApi("/api/status?job=" + encodeURIComponent(job));
+        const sr = await lanApi(lanStatusUrl(job));
         if (sr.status === 404 || sr.status === 401) throw new Error("gone");
         s = await sr.json();
         if (s && s.ok === false) throw new Error("gone");   // PC restarted / job evicted
         misses = 0;
       } catch(e){
+        if (gen !== LAN.pollOwner) return;   // pre-empted: not our screen to report on
         if (String(e.message) === "gone"){ msg.textContent = "The PC no longer has this batch — was Lock Hunter restarted? Results shown so far are kept."; msg.className = "msg err"; return; }
         if (++misses >= 25){ LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err"); msg.textContent = "Lost contact with the PC — results shown so far are kept."; msg.className = "msg err"; return; }
         continue;
       }
-      LAN.lastRows = s.results || [];
-      renderLanBatch(LAN.lastRows);
+      if (gen !== LAN.pollOwner) return;
+      // only redraw when rows actually arrived (v1.8.3): the list used to be
+      // resent and the whole DOM rebuilt every single second
+      const took = lanTakeRows(s);
+      // -1 = our cursor pointed past this job's list and was reset; the next
+      // poll refetches it whole. Reading THIS reply would report an empty hunt.
+      // ONCE only: a PC that kept answering from a base we are not at would
+      // otherwise hide its own "done"/"error" until the loop ran out.
+      if (took < 0){ if (++resyncs <= 1) continue; } else resyncs = 0;
+      // took !== 0 covers the second resync too: the list really is empty
+      // now, so the screen must stop showing rows the count line denies
+      if (took !== 0 || i === 0) renderLanBatch(LAN.lastRows);
       const p = (s.progress && s.progress.length) ? s.progress[s.progress.length - 1] : "";
       if (s.state === "running"){
         msg.textContent = `${s.done_locks || 0}/${total} locks · ${lanVisibleRows(LAN.lastRows).length} listing(s) so far · ` + p;
+        // and clear any leftover error class: it silently switched the count
+        // line off for the rest of the hunt (lanRerender skips on "err")
+        msg.className = "msg";
       }
-      if (s.state === "done"){ msg.textContent = `Batch done: ${lanCountLine(LAN.lastRows)} (${s.done_locks || 0}/${total} locks)`; msg.className = "msg ok"; return; }
+      if (s.state === "done"){
+        // redraw on the way out: the last tick often brings no rows, and the
+        // empty screen has to change from "Nothing yet…" to "No listings
+        // found." when the hunt is over
+        LAN.jobDone = true; renderLanBatch(LAN.lastRows);
+        msg.textContent = `Batch done: ${lanCountLine(LAN.lastRows)} (${s.done_locks || 0}/${total} locks)`; msg.className = "msg ok"; return; }
       if (s.state === "error"){ msg.textContent = "Batch failed on the PC. " + p; msg.className = "msg err"; return; }
     }
     msg.textContent = "Batch timed out."; msg.className = "msg err";
   } catch(ex){
-    msg.textContent = "Lost contact with the PC: " + ex.message; msg.className = "msg err";
-  } finally { $("lanGo").disabled = false; $("lanCancel").style.display = "none"; LAN.batchJob = null; }
+    msg.textContent = "Couldn't reach the PC: " + ex.message; msg.className = "msg err"; LAN.startErr = true;
+    // …but only declare the LINK down when nothing else is getting through.
+    // A hunt that is polling successfully every second is proof this was one
+    // bad call, not a lost connection — flipping the banner (and reopening
+    // the pairing box) then outlived the hunt, which finished fine. (v1.8.3)
+    if (lanLinkLooksDown()){
+      LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err");
+    }
+  } finally {
+    // hand the controls back only if WE still own the screen — a stale loop
+    // must not take a newer hunt's Cancel button away (v1.8.3)
+    if (gen === LAN.pollOwner){
+      LAN.pollOwner = 0;
+      $("lanGo").disabled = false; $("lanCancel").style.display = "none"; LAN.batchJob = null;
+    }
+  }
+}
+// An empty result area means two different things and used to say only one
+// of them: a hunt that has not produced anything YET, versus one that has
+// finished and found nothing. Interrupted hunts ("the PC no longer has this
+// batch", lost contact) count as not-finished — their own message explains.
+function lanEmptyHTML(){
+  return LAN.jobDone
+    ? `<div class="muted" style="padding:8px 2px">No listings found.</div>`
+    : `<div class="muted" style="padding:8px 2px">Nothing yet…</div>`;
 }
 function renderLanBatch(rows){
   const out = $("lanOut");
   const shown = lanVisibleRows(rows);
-  if (!shown.length){ out.innerHTML = `<div class="muted" style="padding:8px 2px">Nothing yet…</div>`; return; }
+  if (!shown.length){
+    // v1.8.3 (C3): "Locks only" can now be toggled after a batch, so an
+    // empty screen has to say WHICH of the two reasons it is — "Nothing
+    // yet…" read as "still starting" on a hunt that had actually finished.
+    out.innerHTML = (rows && rows.length && lanLocksOnly() && lanFlagged(rows))
+      ? `<div class="muted" style="padding:8px 2px">No lock listings — untick “Locks only” to see the ` + rows.length + ` other result(s).</div>`
+      : lanEmptyHTML();
+    return;
+  }
   const final = lanControlRows(rows);
-  if (!final.length){ out.innerHTML = `<div class="muted" style="padding:8px 2px">Nothing to show (filters).</div>`; return; }
+  if (!final.length){ out.innerHTML = `<div class="muted" style="padding:8px 2px">All ${shown.length} result(s) are filtered out by your price/pickup/age filters.</div>`; return; }
   const byLock = new Map();
   for (const r of final){ const k = String((r && r.lock) || "?"); if (!byLock.has(k)) byLock.set(k, []); byLock.get(k).push(r); }
   let html = "";
   for (const [lk, list] of byLock){
     html += `<div class="grphead">${esc(lk)} (${list.length})</div>`;
-    for (const r of list) html += lanRowHTML(r);
+    for (const r of lanSortGroup(list)) html += lanRowHTML(r);
   }
   out.innerHTML = html;
 }
 async function lanSearch(lock, belt){
+  // startErr: a hunt that fails BEFORE the PC accepts it (empty box, 409, no
+  // Wi-Fi) leaves the PREVIOUS hunt's rows on screen — so jobDone stays true
+  // (the empty state still reads "No listings found.", not "Nothing yet…"),
+  // but its red message must survive the next filter tap, which lanRerender
+  // would otherwise replace with the old hunt's green count line.
+  LAN.startErr = false;
   const q = String(lock || "").trim();
   const msg = $("lanMsg"), out = $("lanOut");
-  if (!q){ if (msg){ msg.textContent = "Type a lock name first."; msg.className = "msg err"; } return; }
+  if (!q){ if (msg){ msg.textContent = "Type a lock name first."; msg.className = "msg err"; LAN.startErr = true; } return; }
   if (!LAN.token){ setLanConn("Enter the pairing code from your PC first.", "err"); return; }
-  out.innerHTML = ""; msg.textContent = "Searching — your PC is checking eBay + marketplaces…"; msg.className = "msg";
+  // the result area is cleared only once the PC has ACCEPTED the search
+  // (v1.8.3) — a 409 used to blank a running hunt's list
+  msg.textContent = "Searching — your PC is checking eBay + marketplaces…"; msg.className = "msg";
   $("lanGo").disabled = true;
+  let gen = 0;
   try {
     const r = await lanApi("/api/search", {method:"POST",
       headers:{"Content-Type":"application/json"}, body: JSON.stringify({lock:q, belt:belt||""})});
     if (r.status === 401){ setLanConn("Your PC rejected the pairing code.", "err"); msg.textContent = ""; return; }
-    if (r.status === 409){ msg.textContent = "A search is already running on the PC — wait for it to finish."; msg.className = "msg err"; return; }
-    if (!r.ok){ msg.textContent = "Couldn't start the search (HTTP " + r.status + ")."; msg.className = "msg err"; return; }
+    if (r.status === 409){ msg.textContent = "A search is already running on the PC — wait for it to finish."; msg.className = "msg err"; LAN.startErr = true; return; }
+    if (!r.ok){ msg.textContent = "Couldn't start the search (HTTP " + r.status + ")."; msg.className = "msg err"; LAN.startErr = true; return; }
     const {job} = await r.json();
-    if (!job){ msg.textContent = "The PC didn't start a search."; msg.className = "msg err"; return; }
-    let misses = 0;
+    if (!job){ msg.textContent = "The PC didn't start a search."; msg.className = "msg err"; LAN.startErr = true; return; }
+    out.innerHTML = "";
+    LAN.lastRows = []; LAN.rowsSeen = 0; LAN.batchView = false; LAN.jobDone = false;
+    gen = LAN.pollOwner = ++LAN.pollGen;
+    // we now own the screen: a batch we just pre-empted can no longer take
+    // its Cancel button away itself, so retire it here (a search has none)
+    $("lanCancel").style.display = "none"; LAN.batchJob = null;
+    let misses = 0, resyncs = 0;
     for (let i = 0; i < 900; i++){
       await new Promise(res => setTimeout(res, 1000));
+      if (gen !== LAN.pollOwner) return;    // a newer search/batch owns the screen
       let s;
       try {
-        const sr = await lanApi("/api/status?job=" + encodeURIComponent(job));
+        const sr = await lanApi(lanStatusUrl(job));
         if (sr.status === 404 || sr.status === 401) throw new Error("gone");
         s = await sr.json();
         if (s && s.ok === false) throw new Error("gone");   // PC restarted / job evicted
         misses = 0;
       } catch(e){
+        if (gen !== LAN.pollOwner) return;   // pre-empted: not our screen to report on
         if (String(e.message) === "gone"){ msg.textContent = "The PC no longer has this search — was Lock Hunter restarted? Try again."; msg.className = "msg err"; return; }
         if (++misses >= 25){ LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err"); msg.textContent = "Lost contact with the PC — try again once it's reachable."; msg.className = "msg err"; return; }
         continue;
       }
-      if (s.progress && s.progress.length) msg.textContent = s.progress[s.progress.length - 1];
-      if (s.state === "done"){ LAN.lastRows = s.results || []; renderLanResults(LAN.lastRows); msg.textContent = lanCountLine(LAN.lastRows); msg.className = "msg ok"; return; }
+      if (gen !== LAN.pollOwner) return;
+      if (s.progress && s.progress.length){
+        msg.textContent = s.progress[s.progress.length - 1];
+        msg.className = "msg";        // clear a stale error class (see below)
+      }
+      // cursor reset — refetch rather than report an empty search, but only
+      // once in a row, so a terminal state is never withheld (see lanBatch)
+      const took = lanTakeRows(s);
+      if (took < 0){ if (++resyncs <= 1) continue; } else resyncs = 0;
+      if (s.state === "done"){ LAN.jobDone = true; renderLanResults(LAN.lastRows); msg.textContent = lanCountLine(LAN.lastRows); msg.className = "msg ok"; return; }
       if (s.state === "error"){ msg.textContent = "Search failed on the PC. " + ((s.progress || []).slice(-1)[0] || ""); msg.className = "msg err"; return; }
     }
     msg.textContent = "Search timed out."; msg.className = "msg err";
   } catch(ex){
-    msg.textContent = "Lost contact with the PC: " + ex.message; msg.className = "msg err";
-    LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err");
-  } finally { $("lanGo").disabled = false; }
+    msg.textContent = "Couldn't reach the PC: " + ex.message; msg.className = "msg err"; LAN.startErr = true;
+    if (lanLinkLooksDown()){          // see the same guard in lanBatch
+      LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err");
+    }
+  } finally {
+    // only give Go back if we still own the screen (v1.8.3) — see LAN.pollGen
+    if (gen === LAN.pollOwner){ LAN.pollOwner = 0; $("lanGo").disabled = false; }
+  }
 }
 function lanRowHTML(r){
   const price = [r.price, r.currency].filter(Boolean).map(x => String(x)).join(" ").trim();
-  const usd = (typeof r.usd === "number" && isFinite(r.usd) && price.indexOf("$") < 0)
+  // v1.8.2 (desktop v7.0.2, B6): the PC now sends the currency code the price
+  // resolves to (`cur`, site-aware — "AU $40" is AUD, "¥1200" on Taobao is
+  // CNY); show the USD line unless that code IS USD. Older PCs (no `cur`)
+  // fall back to the old any-"$"-means-dollars guess.
+  const isUsd = r.cur ? String(r.cur).toUpperCase() === "USD" : price.indexOf("$") >= 0;
+  const usd = (typeof r.usd === "number" && isFinite(r.usd) && !isUsd)
     ? ` · <span class="p">$` + r.usd.toFixed(2) + `</span>` : "";
   const rawUrl = String((r && r.url) || "");
   const url = /^https?:\/\//i.test(rawUrl) ? rawUrl : "";
@@ -1352,6 +1659,58 @@ function lanRowHTML(r){
     `</div></div>` +
     `<button class="lanHide" title="Never show again (also hides on the PC)" style="background:none;border:none;color:#969ea6;cursor:pointer;font-size:14px;padding:2px 4px;flex:none">✕</button>` +
     `</div>`;
+}
+// v1.8.3 (desktop v7.0.2, C2): ask only for rows we haven't seen yet. The PC
+// echoes `since` when it understood the parameter; an older PC ignores it and
+// sends the whole list, which we then use as the new state (unchanged
+// behaviour). LAN.rowsSeen counts rows RECEIVED, so a locally hidden row (✕)
+// can't shift the window — and stays hidden instead of coming back next poll.
+// One failed call is not a lost link: if anything has got through to the PC
+// in the last few seconds, this was one bad call. The window is shorter than
+// the poll loops' own 25-miss tolerance (so a tap still reports a dead PC
+// first) and long enough that a blip under a healthy hunt doesn't flip the
+// banner — and any successful poll puts the banner back (see below).
+function lanLinkLooksDown(){
+  // with no hunt polling, a failed call is the only evidence there is — an
+  // earlier success (the boot hello, say) says nothing about now.
+  if (!LAN.pollOwner) return true;
+  return !LAN.lastOkAt || (Date.now() - LAN.lastOkAt) > 15000;
+}
+// …and the repair: nothing used to clear a "Lost contact" banner, so one
+// blip left it (and the re-opened pairing box) on screen for the rest of the
+// session even while the PC answered every poll.
+function lanLinkBackUp(){
+  if (LAN.ok) return;
+  LAN.ok = true;
+  setLanConn(LAN.connLine || "Connected to Lock Hunter on your PC.", "ok");
+}
+function lanStatusUrl(job){
+  return "/api/status?job=" + encodeURIComponent(job)
+       + "&since=" + (LAN.rowsSeen || 0);
+}
+function lanTakeRows(s){
+  const rows = (s && Array.isArray(s.results)) ? s.results : [];
+  if (s && typeof s.since === "number"){          // delta reply
+    // The PC clamps our cursor to the job's real length and echoes back the
+    // base it actually used. If that isn't the cursor we sent, ours points
+    // past the end of this job's list (a job id reused after the PC
+    // restarted, a delta applied twice) — every later poll would come back
+    // empty for ever. Start the list over; the next poll refills it.
+    // Compare against rowsSeen, NOT lastRows.length: hiding a row with ✕
+    // shortens the list on purpose and must not look like a desync.
+    if (s.since !== (LAN.rowsSeen || 0)){
+      LAN.lastRows = []; LAN.rowsSeen = 0;
+      return -1;                 // caller: poll again, do not read this reply
+    }
+    if (!rows.length) return 0;
+    LAN.lastRows = (LAN.lastRows || []).concat(rows);
+    LAN.rowsSeen = s.since + rows.length;
+    return rows.length;
+  }
+  const before = (LAN.lastRows || []).length;     // older PC: full list
+  LAN.lastRows = rows;
+  LAN.rowsSeen = rows.length;
+  return rows.length === before ? 0 : rows.length;
 }
 function lanControlRows(rows){
   let out = lanVisibleRows(rows);
@@ -1377,7 +1736,26 @@ function lanControlRows(rows){
     has.sort((a, b) => srt === "plo" ? val(a) - val(b) : val(b) - val(a));
     out = has.concat(no);                                 // blanks sink, like the PC
   }
+  // "Newest first" is the PC's own order (Lock Bazaar first, then newest
+  // FOUND first) — deliberately NOT re-sorted here. Only a handful of the 48
+  // marketplaces publish a listing date, so a global date sort would lift
+  // those few sites (and a months-old ad among them) above everything found
+  // today. The date is applied INSIDE each group instead — lanSortGroup.
   return out;
+}
+// v1.8.3 (C3): "Newest first" now really uses the listing date, but only
+// where it means something: within one site's group (a search) or one lock's
+// group (a batch). Rows with a date sort newest first; rows without one keep
+// the PC's order behind them, and the groups themselves never move.
+function lanSortGroup(list){
+  const srt = $("lanSort") ? $("lanSort").value : "";
+  if (srt !== "") return list;                    // price sorts already applied
+  const day = r => String((r && r.posted_at) || "").slice(0, 10);
+  const dated = list.filter(r => day(r));
+  if (!dated.length || dated.length === 1) return list;
+  const undated = list.filter(r => !day(r));
+  dated.sort((a, b) => day(b) < day(a) ? -1 : day(b) > day(a) ? 1 : 0);
+  return dated.concat(undated);
 }
 function lanFlagged(rows){ return (rows || []).some(r => r && typeof r.lockish === "boolean"); }
 function lanLocksOnly(){ const el = $("lanLockOnly"); return !el || el.checked; }
@@ -1398,7 +1776,9 @@ function renderLanResults(rows){
   const shown = lanVisibleRows(rows);
   const note = (!flagged && rows && rows.length && lanLocksOnly())
     ? `<div class="muted" style="padding:4px 2px;font-size:12px">Locks-only needs Lock Hunter v6.2.1+ on your PC — showing everything.</div>` : "";
-  if (!rows || !rows.length){ out.innerHTML = `<div class="muted" style="padding:8px 2px">No listings found.</div>`; return; }
+  // a live search starts with an empty list: a filter tapped while it runs
+  // must not claim the search found nothing (v1.8.3)
+  if (!rows || !rows.length){ out.innerHTML = lanEmptyHTML(); return; }
   if (!shown.length){ out.innerHTML = note + `<div class="muted" style="padding:8px 2px">No lock listings — untick “Locks only” to see the ` + rows.length + ` other result(s).</div>`; return; }
   const final = lanControlRows(rows);
   if (!final.length){ out.innerHTML = note + `<div class="muted" style="padding:8px 2px">All ${shown.length} result(s) are filtered out by your price/pickup/age filters.</div>`; return; }
@@ -1407,15 +1787,25 @@ function renderLanResults(rows){
   let html = "";
   for (const [site, list] of bySite){
     html += `<div class="grphead">${esc(site)} (${list.length})</div>`;
-    for (const r of list) html += lanRowHTML(r);
+    for (const r of lanSortGroup(list)) html += lanRowHTML(r);
   }
   out.innerHTML = note + html;
 }
 function lanInit(){
   const m = /[#&]t=([A-Za-z0-9]+)/.exec(location.hash || "");
-  if (m){ LAN.token = m[1]; store.set("phone_token", m[1]);
-    try { history.replaceState(null, "", location.pathname + location.search); } catch(e){} }
-  else LAN.token = store.get("phone_token", "") || "";
+  // v1.8.3 (C3): the #t= fragment is KEPT in the address bar. Stripping it
+  // meant an "Add to Home Screen" icon (iOS gives the web app its own
+  // storage) started unpaired and the code had to be typed in by hand. A
+  // fragment never leaves the phone — it is not sent to the PC — and the
+  // code only works on your own Wi-Fi.
+  const saved = store.get("phone_token", "") || "";
+  // …but a code the PC has already refused must not keep overwriting a good
+  // one typed in by hand, or the icon would ask for the code at every launch.
+  const dead = (m && m[1] && m[1] === store.get("phone_token_bad", "")
+                && saved && saved !== m[1]);
+  LAN.urlToken = m ? m[1] : "";
+  if (m && !dead){ LAN.token = m[1]; store.set("phone_token", m[1]); }
+  else LAN.token = saved;
   const sec = document.createElement("section");
   sec.className = "view"; sec.id = "view-search";
   sec.innerHTML =
@@ -1445,8 +1835,10 @@ function lanInit(){
   lo.checked = store.get("lan_lockonly", "1") !== "0";
   lo.onchange = () => {
     store.set("lan_lockonly", lo.checked ? "1" : "0");
-    if (LAN.lastRows){ renderLanResults(LAN.lastRows);
-      const m = $("lanMsg"); if (m && m.className.indexOf("err") < 0){ m.textContent = lanCountLine(LAN.lastRows); m.className = "msg ok"; } }
+    // v1.8.3 (C3): go through lanRerender like every other control — this
+    // called renderLanResults directly, so toggling it after a batch hunt
+    // regrouped the results by SITE instead of by lock.
+    lanRerender();
   };
   $("lanCancel").onclick = async () => {
     if (!LAN.batchJob) return;
@@ -1475,10 +1867,16 @@ function lanInit(){
   });
   const lanRerender = () => {
     if (!LAN.lastRows) return;
-    const batch = LAN.lastRows.some(r => r && r.lock);
-    (batch ? renderLanBatch : renderLanResults)(LAN.lastRows);
+    // which view this is belongs to the JOB, not to the rows: inferring it
+    // from `r.lock` made an emptied batch (last row hidden with ✕, or a
+    // filter tap before the first hit) redraw as a search — "No listings
+    // found." on a hunt that is still running (v1.8.3).
+    (LAN.batchView ? renderLanBatch : renderLanResults)(LAN.lastRows);
     const m = $("lanMsg");
-    if (m && m.className.indexOf("err") < 0) m.textContent = lanCountLine(LAN.lastRows);
+    // a finished hunt's count line is always safe to restate — and has to be,
+    // or one stray error left it stuck for the rest of the session
+    if (m && LAN.jobDone && !LAN.startErr){ m.textContent = lanCountLine(LAN.lastRows); m.className = "msg ok"; }
+    else if (m && m.className.indexOf("err") < 0) m.textContent = lanCountLine(LAN.lastRows);
   };
   for (const id of ["lanSort", "lanMin", "lanMax", "lanHidePickup", "lanHideOld"]){
     const el = $(id); if (!el) continue;
@@ -1508,7 +1906,10 @@ function lanInit(){
     lanSearch(b.dataset.lock, b.dataset.belt || "");
   });
   try { window.__lh_lan = { render: renderLanResults, state: LAN,
-                            countLine: lanCountLine }; } catch(e){}
+                            countLine: lanCountLine, batch: renderLanBatch,
+                            take: lanTakeRows, sortGroup: lanSortGroup,
+                            control: lanControlRows, search: lanSearch,
+                            runBatch: lanBatch }; } catch(e){}
   lanHello();
 }
 /* ========================== end LAN live-search mode ==================== */
@@ -1522,6 +1923,8 @@ async function boot(){
   // collectors' owned-lock lists (data from LPU's database) that pre-1.7.0
   // pages left behind (C14).
   store.del("owners");
+  // v1.8.3 (C3): the dead Bazaar "seen" snapshot (see loadBazaar)
+  store.del("bzsnap"); store.del("bzseeded");
   $("lockFind").oninput = renderLocks;
   $("lockShow").onchange = renderLocks;
   $("cmpBtn").onclick = runCompare;
