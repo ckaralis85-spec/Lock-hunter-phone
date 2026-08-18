@@ -115,16 +115,14 @@ ul.list li:active{background:var(--sel)}
   padding:9px 10px; margin-top:8px; font-size:13px}
 .bzrow .p{color:var(--deal); font-weight:700}
 .bzrow a{color:var(--accent); text-decoration:none; font-weight:600}
-/* ---- owners / compare results ---- */
+/* ---- compare results ---- */
 .orow{display:flex; align-items:center; gap:8px; background:var(--panel);
   border:1px solid var(--line); border-radius:11px; padding:9px 11px; margin-bottom:6px; font-size:13.5px}
 .orow a{color:var(--accent); text-decoration:none; font-weight:650}
 .orow.tap{cursor:pointer}
 .orow.tap:active{background:var(--sel)}
-.count{font-variant-numeric:tabular-nums; color:var(--mute); margin-left:auto; font-size:12.5px; flex:none}
 .grphead{font-size:11px; color:var(--accent); letter-spacing:.8px; text-transform:uppercase;
   font-weight:650; margin:14px 2px 6px}
-progress{width:100%; height:6px; accent-color:var(--accent)}
 /* ---- bottom nav ---- */
 nav{position:fixed; left:0; right:0; bottom:0; z-index:40; display:flex;
   background:rgba(30,36,41,.97); backdrop-filter:blur(8px);
@@ -212,6 +210,7 @@ a.plain{color:var(--accent); text-decoration:none}
     <h2>Compare collections</h2>
     <div class="muted" style="margin-bottom:8px">Paste another collector's lpubelts profile link to compare their collection with yours. Find collectors on the
       <a class="plain" href="https://lpubelts.com/#/leaderboard/locks" target="_blank" rel="noopener">LPU leaderboard</a>.</div>
+    <div id="cmpWebNote" class="msg" style="display:none"></div>
     <input type="url" id="cmpUrl" placeholder="https://lpubelts.com/#/profile/…">
     <div class="row" style="margin-top:8px">
       <button class="primary grow" id="cmpBtn">Compare</button>
@@ -219,28 +218,6 @@ a.plain{color:var(--accent); text-decoration:none}
     <div class="msg" id="cmpMsg"></div>
   </div>
   <div id="cmpOut"></div>
-</section>
-
-<!-- ================= OWNERS ================= -->
-<section class="view" id="view-owners">
-  <div class="card">
-    <h2>Who owns a lock</h2>
-    <div class="muted" style="margin-bottom:8px">Pick a lock to see which leaderboard collectors own it. The first load reads every listed collection — a few minutes; after that it's instant from the saved copy. ★ after a name = for sale on the Lock Bazaar right now.</div>
-    <input type="text" id="ownFind" list="lockNames" placeholder="Find lock…">
-    <datalist id="lockNames"></datalist>
-    <div class="row" style="margin-top:8px">
-      <select id="ownBelt" class="grow"></select>
-      <button class="primary" id="ownSearch">Search</button>
-    </div>
-    <div class="row wrap" style="margin-top:8px">
-      <button class="small" id="ownLoad">Load collections</button>
-      <button class="small" id="wishTop">Top wishlist owners</button>
-      <button class="small" id="bzTop">Top Bazaar sellers</button>
-    </div>
-    <div class="msg" id="ownMsg"></div>
-    <progress id="ownProg" max="100" value="0" style="display:none"></progress>
-  </div>
-  <div id="ownOut"></div>
 </section>
 
 </main>
@@ -261,14 +238,18 @@ a.plain{color:var(--accent); text-decoration:none}
   <div class="card">
     <h2>Sync your collection</h2>
     <div class="muted" style="margin-bottom:10px">
-      Paste your lpubelts profile link and your owned locks + wishlist load automatically —
-      the same link the desktop app's profile import uses. On
-      <a class="plain" href="https://lpubelts.com" target="_blank" rel="noopener">lpubelts.com</a>:
-      sign in → tap your profile → copy the page link.
+      Your owned locks + wishlist come from Lock Hunter on your PC: open this page from the
+      address shown under <b>Phone link</b> (same Wi-Fi) and tap Sync. Optionally paste your
+      <a class="plain" href="https://lpubelts.com" target="_blank" rel="noopener">lpubelts.com</a>
+      profile link so “open profile” works.
     </div>
-    <input type="url" id="obUrl" placeholder="https://lpubelts.com/#/profile/…">
+    <div id="obPairRow" class="row" style="display:none;margin-bottom:8px">
+      <input id="obTok" type="text" class="grow" placeholder="Pairing code from your PC" autocapitalize="off" autocomplete="off" spellcheck="false">
+      <button id="obPairGo">Connect</button>
+    </div>
+    <input type="url" id="obUrl" placeholder="https://lpubelts.com/#/profile/… (optional)">
     <div class="row" style="margin-top:10px">
-      <button class="primary grow" id="obGo">Save &amp; sync</button>
+      <button class="primary grow" id="obGo">Sync from my PC</button>
       <button id="obSkip">Skip</button>
     </div>
     <div class="msg" id="obMsg"></div>
@@ -284,7 +265,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.6.0";
+  const VERSION = "1.8.1";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -299,11 +280,8 @@ const LHC = (() => {
     stats:   ["https://raw.githubusercontent.com/Lockpickers-United/lpu-belt-explorer/main/src/data/collectionStatsById.json",
               "https://raw.githubusercontent.com/Lockpickers-United/lpu-belt-explorer/master/src/data/collectionStatsById.json"],
     bazaar:  ["https://data.lpulocks.com/lockbazaar/lockBazaarData.json"],
-    leaderboard: "https://explore.lpubelts.com/data/leaderboardData.json",
   };
   const BAZAAR_URL = "https://lpulocks.com/#/lockbazaar";
-  // Firebase web config is public by design (lock_hunter.py L4696-4701)
-  const FB = { pid: "lpu-belt-explorer", key: "AIzaSyDGGErdOp0lpzUumA60xJO7BlQr027y9Vo" };
 
   // ---- _canonical_belt (L5775)
   function canonicalBelt(raw){
@@ -642,63 +620,10 @@ const LHC = (() => {
     return {byLock, rowLock};
   }
 
-  // ---- leaderboard (fetch_leaderboard wrapper handling, L7102-7109)
-  function parseLeaderboard(data){
-    if (data && typeof data === "object" && !Array.isArray(data)) {
-      for (const k of ["leaders","data","leaderboard","entries","rows","results"])
-        if (Array.isArray(data[k])) { data = data[k]; break; }
-    }
-    if (!Array.isArray(data)) throw new Error("Leaderboard data was not in the expected format.");
-    return data;
-  }
-  // (load_top_owners ranking, L7202-7211)
-  function rankLeaders(leaders){
-    const ownCount = e => (typeof e.own === "number" && isFinite(e.own)) ? e.own : 0;
-    const ranked = leaders.filter(e => e && !e.privacyNoLeaderboard && ownCount(e) > 0);
-    ranked.sort((a,b) => ownCount(b) - ownCount(a));
-    return ranked.map(e => ({uid: String(e.id || e.userId || ""),
-                             name: String(e.displayName||"").trim(),
-                             anon: !!e.privacyAnonymous,
-                             ownCount: Math.trunc(ownCount(e))}))
-                 .filter(e => e.uid);
-  }
-  // ---- _is_no_display_name (L7086)
-  function isNoDisplayName(name){
-    const n = String(name||"").trim().toLowerCase();
-    return ["","(unknown)","unknown","no display name","no displayname","no name"].includes(n);
-  }
   // ---- extract_profile_uid (L6665)
   function extractUid(url){
     const m = /profile\/([A-Za-z0-9_-]{10,})/.exec(String(url||""));
     return m ? m[1] : null;
-  }
-  // ---- _fs_value (L6639)
-  function fsValue(v){
-    if (!v || typeof v !== "object") return v;
-    for (const k of ["stringValue","integerValue","doubleValue","booleanValue"])
-      if (k in v) return v[k];
-    if ("arrayValue" in v) return ((v.arrayValue||{}).values || []).map(fsValue);
-    if ("mapValue" in v) {
-      const out = {};
-      for (const [k2,v2] of Object.entries((v.mapValue||{}).fields || {})) out[k2] = fsValue(v2);
-      return out;
-    }
-    return null;
-  }
-  const decodeFields = fields =>
-    Object.fromEntries(Object.entries(fields||{}).map(([k,v])=>[k,fsValue(v)]));
-  // ---- own/wish/anon from a lockcollections doc (L6853-6859, L7113-7130)
-  function profileFromFields(f){
-    const own = new Set(), wish = new Set();
-    for (const fld of ["own","safelocksOwn"]) {
-      const v = f[fld];
-      if (Array.isArray(v)) for (const x of v)
-        if (typeof x === "string" || typeof x === "number") own.add(String(x));
-    }
-    const w = f.wishlist;
-    if (Array.isArray(w)) for (const x of w)
-      if (typeof x === "string" || typeof x === "number") wish.add(String(x));
-    return {own, wish, anon: !!f.privacyAnonymous};
   }
   // ---- network (fetchFn injectable for tests)
   async function fetchJson(url, opts, fetchFn){
@@ -719,74 +644,6 @@ const LHC = (() => {
     }
     throw last || new Error("no url worked");
   }
-  // ---- _anon_sign_in (L6669)
-  async function anonSignIn(fetchFn){
-    const d = await fetchJson(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${FB.key}`,
-      {method:"POST", headers:{"Content-Type":"application/json"},
-       body: JSON.stringify({returnSecureToken:true})}, fetchFn);
-    return d.idToken || null;
-  }
-  const fsDocBase = () =>
-    `projects/${FB.pid}/databases/(default)/documents/lockcollections/`;
-  // single-doc read (the Compare-tab path)
-  async function fsGetCollectionDoc(uid, token, fetchFn){
-    const f = fetchFn || fetch;
-    const r = await f(`https://firestore.googleapis.com/v1/${fsDocBase()}${encodeURIComponent(uid)}?key=${FB.key}`,
-      {headers: token ? {Authorization:"Bearer "+token} : {}});
-    if (r.status === 404) return {fields:{}, code:404};
-    if (!r.ok) {
-      let err = "";
-      try { err = (await r.text()).slice(0, 200).replace(/\s+/g, " ").trim(); } catch (e) {}
-      return {fields:null, code:r.status, error:err};
-    }
-    const d = await r.json();
-    return {fields: decodeFields(d.fields), code:200};
-  }
-  // ---- _fs_batch_get (L7133) — chunked batchGet w/ per-doc fallback
-  async function fsBatchGet(uids, token, progress, fetchFn){
-    const f = fetchFn || fetch;
-    const out = {}, failed = new Set();
-    const chunk = 100, total = uids.length;
-    for (let i = 0; i < total; i += chunk) {
-      const part = uids.slice(i, i+chunk);
-      let ok = false;
-      const seen = new Set();
-      try {
-        const r = await f(`https://firestore.googleapis.com/v1/projects/${FB.pid}/databases/(default)/documents:batchGet?key=${FB.key}`,
-          {method:"POST",
-           headers: Object.assign({"Content-Type":"application/json"},
-                                  token ? {Authorization:"Bearer "+token} : {}),
-           body: JSON.stringify({documents: part.map(u => fsDocBase()+u)})});
-        if (r.ok) {
-          ok = true;
-          for (const row of await r.json()) {
-            const doc = row.found;
-            if (!doc) {
-              if (row.missing) seen.add(String(row.missing).split("/").pop());
-              continue;
-            }
-            const uid = String(doc.name).split("/").pop();
-            seen.add(uid);
-            out[uid] = profileFromFields(decodeFields(doc.fields));
-          }
-        }
-      } catch (ex) { ok = false; }
-      if (!ok) {
-        for (const u of part) {
-          try {
-            const {fields, code} = await fsGetCollectionDoc(u, token, fetchFn);
-            if (code === 200 && fields && Object.keys(fields).length) {
-              out[u] = profileFromFields(fields); seen.add(u);
-            } else if (code === 200 || code === 404) seen.add(u);
-          } catch (ex) {}
-        }
-      }
-      for (const u of part) if (!seen.has(u)) failed.add(u);
-      if (progress) progress(Math.min(i+chunk, total), total);
-    }
-    return {map: out, failed};
-  }
   const profileUrlFor = (uid, name) =>
     `https://lpubelts.com/#/profile/${uid}?name=${encodeURIComponent(String(name||"").replace(/ /g,"_"))}&collection=Own`;
   // Open the Lock Bazaar filtered to ONE seller's listings. The bazaar treats every
@@ -801,14 +658,13 @@ const LHC = (() => {
   }
 
   return {VERSION, CANONICAL_BELTS, BELT_RANK, BELT_COLORS, UNRANKED_GREY,
-          URLS, BAZAAR_URL, FB,
+          URLS, BAZAAR_URL,
           canonicalBelt, dispBelt, rarityStars, starsTxt, lpuSlug, mapCatalog,
           foldLight, fold, normSizes, canonAliases, tokensOf, matchTokens, splitCatalogNames,
           bzSeller, bzMake, bzModel, bzBelt, bzLockName, bzPrice,
           bzEntryKey, bazaarLockUrl, collectListings, isLockListing, matchBazaar,
-          parseLeaderboard, rankLeaders, isNoDisplayName, extractUid,
-          fsValue, decodeFields, profileFromFields,
-          fetchJson, fetchFirstJson, anonSignIn, fsGetCollectionDoc, fsBatchGet,
+          extractUid,
+          fetchJson, fetchFirstJson,
           profileUrlFor, bazaarSellerUrl};
 })();
 if (typeof globalThis !== "undefined") globalThis.LHC = LHC;
@@ -843,15 +699,13 @@ const S = {
   listings: [], bzMatch: null,                   // {byLock,rowLock}
   bzSnapshot: new Set(store.get("bzsnap", [])),  // entry keys already seen
   bzNew: new Set(),
-  leaderboardRaw: null,
-  owners: null, ownersTs: 0,                     // [{uid,name,anon,ownCount,owned:Set}]
-  ownersResults: [], cmpResults: null,
-  feeds: {catalog:{st:"…"}, stats:{st:"…"}, bazaar:{st:"…"}, leaderboard:{st:"…"}},
+  cmpResults: null,
+  feeds: {catalog:{st:"…"}, stats:{st:"…"}, bazaar:{st:"…"}},
   view: "locks", beltFilter: "All",
 };
 
 /* ---------- feed status ---------- */
-const FEED_LABELS = {catalog:"Catalog", stats:"Rarity", bazaar:"Bazaar", leaderboard:"Leaderboard"};
+const FEED_LABELS = {catalog:"Catalog", stats:"Rarity", bazaar:"Bazaar"};
 function setFeed(name, st, detail){
   S.feeds[name] = {st, detail: detail||""};
   const pills = Object.entries(S.feeds).map(([k,v]) => {
@@ -872,19 +726,19 @@ function renderAbout(){
     return `${FEED_LABELS[k]}: ${mark} ${esc(v.detail||"")}`;
   }).join("<br>");
   $("aboutBox").innerHTML =
-    `Lock Hunter phone companion v${LHC.VERSION} — browsing, collection, compare` +
-    ` and owners. Hunting stays on the PC.<br><br>` +
+    `Lock Hunter phone companion v${LHC.VERSION} — browsing, collection and compare;` +
+    ` live searches run through Lock Hunter on your PC.<br><br>` +
     `<b>Data feeds</b> (this open):<br>${rows}` +
-    (S.feeds.bazaar.st === "fail" || S.feeds.leaderboard.st === "fail"
+    (S.feeds.bazaar.st === "fail"
       ? `<br><br><span style="color:var(--bad)">A feed is blocked from this page's origin — tell Claude which one and the mirror fallback gets built.</span>`
       : "");
 }
 
 /* ---------- boot loads ---------- */
 function setCatalog(rows){
-  // ONE place the catalog lands, so S.byId can never go stale — the tiles,
-  // top-owners and top-sellers all read it (a cached-load early return once
-  // skipped it and every byId consumer silently saw an empty map).
+  // ONE place the catalog lands, so S.byId can never go stale — the tiles
+  // and Compare all read it (a cached-load early return once skipped it and
+  // every byId consumer silently saw an empty map).
   S.catalog = rows;
   S.byId = new Map(rows.map(l => [l.id, l]));
 }
@@ -932,44 +786,63 @@ async function loadBazaar(){
     }
   } catch(ex) { setFeed("bazaar","fail", ex.message); }
 }
-async function loadLeaderboard(){
-  try {
-    const data = await LHC.fetchJson(LHC.URLS.leaderboard);
-    S.leaderboardRaw = LHC.parseLeaderboard(data);
-    setFeed("leaderboard","ok",`${S.leaderboardRaw.length} collectors listed`);
-  } catch(ex) { setFeed("leaderboard","fail", ex.message); }
-}
-
 /* ---------- profile sync ---------- */
+// v1.7.0: your collection comes from Lock Hunter on your PC (its saved
+// own/wishlist), over the home Wi-Fi link. The phone never reads LPU's
+// database — LPU asked apps to stop doing that.
+const NO_PC_SYNC_MSG = "This web copy can't sync a collection: it loads from Lock Hunter on your PC. " +
+  "Open the copy served by your PC — the address under Settings… → Phone link → Set up… (same Wi-Fi) — " +
+  "and it syncs by itself. (LPU asked apps to stop reading their database directly.)";
+// v1.8.0: say what is actually wrong, depending on where we are (B6):
+//   web copy (no PC at all) → NO_PC_SYNC_MSG
+//   PC-served copy, no pairing code yet → tell them to pair (Search tab)
+//   PC-served copy, paired but the PC didn't answer → can't reach the PC
+function pcStateMessage(feature){
+  if (typeof LAN === "undefined" || !LAN_MODE) {
+    if (feature === "Compare")
+      return "Compare runs through Lock Hunter on your PC (the PC does the one read of the other member's profile). " +
+        "Open the copy served by your PC — the address under Settings… → Phone link → Set up… (same Wi-Fi) — to use it. " +
+        "(LPU asked apps to stop reading their database directly.)";
+    return NO_PC_SYNC_MSG;
+  }
+  if (LAN.ok) return "";
+  if (!LAN.token) return feature + " needs your PC: enter the pairing code from Lock Hunter first (Search tab, or the box in the first-run card).";
+  if (LAN.rejected) return "Your PC rejected the saved pairing code — enter the current one (Search tab; Lock Hunter → Settings… → Phone link → Set up…).";
+  return "Can't reach your PC right now — make sure Lock Hunter is open and your phone is on the same Wi-Fi, then try again.";
+}
 async function syncProfile(url, msgEl){
-  const uid = LHC.extractUid(url);
-  if (!uid) { msgEl.textContent = "That doesn't look like a profile link — it needs /profile/<id>."; msgEl.className = "msg err"; return false; }
-  msgEl.textContent = "Signing in…"; msgEl.className = "msg";
+  msgEl = msgEl || {textContent:"", className:""};
+  await ensurePc();
+  const why = pcStateMessage("Syncing");
+  if (why) { msgEl.textContent = why; msgEl.className = "msg err"; return false; }
+  msgEl.textContent = "Reading your collection from your PC…"; msgEl.className = "msg";
   try {
-    // Anonymous sign-in is best-effort — mirror the desktop app, which
-    // tolerates a failed guest token and still attempts the read. Some browser
-    // origins get their sign-in refused; we still try the read, which either
-    // succeeds or returns a precise status we can show.
-    let token = null, signInErr = null;
-    try { token = await LHC.anonSignIn(); } catch (ex) { signInErr = ex.message; }
-    msgEl.textContent = "Reading your collection…";
-    const {fields, code, error} = await LHC.fsGetCollectionDoc(uid, token);
-    if (code !== 200 || !fields) {
-      let m = "profile read failed (HTTP " + code + ")" + (error ? " — " + error : "");
-      if (signInErr && (code === 401 || code === 403))
-        m += ". Guest sign-in was blocked too: " + signInErr;
-      throw new Error(m);
-    }
-    const p = LHC.profileFromFields(fields);
-    if (!p.own.size && !p.wish.size)
-      throw new Error("profile loaded but no owned locks or wishlist found on it");
-    S.own = p.own; S.wish = p.wish;
-    S.profile = {uid, url, ts: Date.now(), ownN: p.own.size, wishN: p.wish.size};
-    store.set("own", [...p.own]); store.set("wish", [...p.wish]);
+    const r = await lanApi("/api/collection");
+    if (r.status === 404) throw new Error("your PC's Lock Hunter is older than this page — update it to v6.2.8+");
+    let j = null;
+    try { j = await r.json(); } catch (_) { j = null; }
+    // v1.8.0 (C18): the PC now says WHY a read failed ({ok:false, error}) — show that
+    // instead of mistaking a failed read for an empty collection
+    if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || ("PC returned HTTP " + r.status));
+    const own = new Set((j.own || []).map(String)), wish = new Set((j.wish || []).map(String));
+    if (!own.size && !wish.size)
+      throw new Error("your PC has no collection saved yet — import your LPU profile in Lock Hunter first");
+    // the PC's saved link is authoritative (a link changed in the PC's
+    // Settings shows here at once); anything typed on the phone is only a
+    // fallback for the "open profile" link
+    const purl = String(j.url || url || (LAN.profile && LAN.profile.url) || "");
+    const uid = LHC.extractUid(purl) || (LAN.profile && LAN.profile.uid) || "";
+    S.own = own; S.wish = wish;
+    S.profile = {uid, url: purl, ts: Date.now(), ownN: own.size, wishN: wish.size};
+    store.set("own", [...own]); store.set("wish", [...wish]);
     store.set("profile", S.profile);
-    msgEl.textContent = `Synced: ${p.own.size} owned, ${p.wish.size} wishlist.`;
-    msgEl.className = "msg ok";
+    const done = `Synced from your PC: ${own.size} owned, ${wish.size} wishlist.`;
+    msgEl.textContent = done; msgEl.className = "msg ok";
     renderAll();
+    // renderAll() rebuilds the profile card, replacing its message element —
+    // put the confirmation on the fresh one too (v1.8.0), so a manual
+    // "Update profile" actually shows what it just did
+    if (msgEl && msgEl.id) { const again = $(msgEl.id); if (again && again !== msgEl) { again.textContent = done; again.className = "msg ok"; } }
     return true;
   } catch(ex) {
     msgEl.textContent = "Sync failed: " + ex.message; msgEl.className = "msg err";
@@ -985,14 +858,17 @@ function renderProfileCard(){
       ` · ${age < 1 ? "under an hour" : age + "h"} ago</div>` +
       `<div class="row" style="margin-top:8px">` +
       `<button class="primary small" id="profSync">Update profile</button>` +
-      `<a class="plain" style="font-size:12.5px" target="_blank" rel="noopener" href="${esc(S.profile.url)}">open profile</a></div>` +
+      (/^https?:\/\//i.test(String(S.profile.url || "")) ? `<a class="plain" style="font-size:12.5px" target="_blank" rel="noopener" href="${esc(S.profile.url)}">open profile</a>` : "") + `</div>` +
       `<div class="msg" id="profMsg"></div>`;
     $("profSync").onclick = () => syncProfile(S.profile.url, $("profMsg"));
+  } else if (!LAN_MODE) {
+    // web copy: no PC here — say so instead of offering a button that can only fail (C20)
+    el.innerHTML = `<div class="muted">${esc(NO_PC_SYNC_MSG)}</div>`;
   } else {
     el.innerHTML =
-      `<div class="muted">Not synced. Paste your lpubelts profile link — owned + wishlist load automatically.</div>` +
-      `<input type="url" id="profUrl" placeholder="https://lpubelts.com/#/profile/…" style="margin-top:8px">` +
-      `<div class="row" style="margin-top:8px"><button class="primary small" id="profGo">Save &amp; sync</button></div>` +
+      `<div class="muted">Not synced. On your home Wi-Fi, connected to Lock Hunter, your owned + wishlist load from your PC. (Optional: paste your lpubelts profile link so “open profile” works.)</div>` +
+      `<input type="url" id="profUrl" placeholder="https://lpubelts.com/#/profile/… (optional)" style="margin-top:8px">` +
+      `<div class="row" style="margin-top:8px"><button class="primary small" id="profGo">Sync from my PC</button></div>` +
       `<div class="msg" id="profMsg"></div>`;
     $("profGo").onclick = () => syncProfile($("profUrl").value.trim(), $("profMsg"));
   }
@@ -1013,7 +889,6 @@ const lockBadges = l => {
   if (S.bzMatch && S.bzMatch.byLock.has(l.id)) b += `<span class="badge b-bz">BAZAAR</span>`;
   return b;
 };
-const onBazaar = id => S.bzMatch && S.bzMatch.byLock.has(id);
 
 /* ---------- LOCKS view ---------- */
 function renderBeltChips(){
@@ -1130,8 +1005,9 @@ function renderCollection(){
       `<div class="track"><div class="fill" style="width:${w}%;background:${color};${edge}"></div></div>` +
       `<div class="bn">${own} / ${tot}</div></div>`;
   }).join("");
-  $("beltNote").textContent = S.profile ? "" :
-    "Sync your profile above and these fill in automatically.";
+  $("beltNote").textContent = S.profile ? "" : (LAN_MODE
+    ? "Sync your profile above and these fill in automatically."
+    : "Open the copy served by your PC (Settings… → Phone link → Set up…) — your collection syncs there and these fill in.");
   const rare = arr => arr.slice().sort((a,b) =>
       ((a.count??0)-(b.count??0)) || a.name.localeCompare(b.name)).slice(0,10);
   const owned = S.catalog.filter(l => S.own.has(l.id));
@@ -1149,19 +1025,20 @@ async function runCompare(){
   const msg = $("cmpMsg");
   const uid = LHC.extractUid($("cmpUrl").value.trim());
   if (!uid) { msg.textContent = "Paste a profile link with /profile/<id> in it."; msg.className="msg err"; return; }
-  msg.textContent = "Reading their collection…"; msg.className="msg";
+  msg.textContent = "Asking your PC to read their collection… (up to ~30 s)"; msg.className="msg";
   $("cmpBtn").disabled = true;
   try {
-    let token = null, signInErr = null;
-    try { token = await LHC.anonSignIn(); } catch (ex) { signInErr = ex.message; }
-    const {fields, code, error} = await LHC.fsGetCollectionDoc(uid, token);
-    if (code !== 200 || !fields) {
-      let m = "read failed (HTTP " + code + ")" + (error ? " — " + error : "");
-      if (signInErr && (code === 401 || code === 403))
-        m += ". Guest sign-in was blocked too: " + signInErr;
-      throw new Error(m);
-    }
-    const theirs = LHC.profileFromFields(fields);
+    // v1.7.0+: the PC reads the other member's collection for us — one request to
+    // LPU's profile service (fetch_other_profile on the PC, desktop v7.0.1+). Neither
+    // the phone nor the PC touches LPU's database.
+    await ensurePc();
+    const why = pcStateMessage("Compare");
+    if (why) throw new Error(why);
+    const r = await lanApi("/api/compare?uid=" + encodeURIComponent(uid), null, 45000);
+    let j = null; try { j = await r.json(); } catch (e) {}
+    if (r.status === 404) throw new Error("your PC's Lock Hunter is older than this page — update it to v6.2.8+");
+    if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || ("PC returned HTTP " + r.status));
+    const theirs = {own: new Set((j.own || []).map(String)), wish: new Set((j.wish || []).map(String))};
     if (!theirs.own.size && !theirs.wish.size)
       throw new Error("that profile has no owned or wishlist locks saved (or it's private)");
     // Trade check — mirrors the desktop app's Compare (_compare_worker):
@@ -1191,161 +1068,19 @@ async function runCompare(){
           `</div>${beltPill(l)}<span class="stars">${LHC.starsTxt(l.count)}</span></div>`).join("")
       : "";
     $("cmpOut").innerHTML =
-      sec(`${who} has — on your wishlist`, theyHave) +
-      sec(`You have — on ${whoP} wishlist`, youHave) +
+      sec(`${esc(who)} has — on your wishlist`, theyHave) +
+      sec(`You have — on ${esc(whoP)} wishlist`, youHave) +
       ((!theyHave.length && !youHave.length)
         ? `<div class="muted" style="padding:8px">This shows locks you want that they own, and locks you own that they want. Sync your wishlist first if it's empty.</div>` : "");
   } catch(ex) { msg.textContent = "Compare failed: " + ex.message; msg.className = "msg err"; }
-  $("cmpBtn").disabled = false;
+  finally { $("cmpBtn").disabled = !LAN_MODE; }   // web copy: stays disabled (C20)
 }
-// Run a Compare against a specific collector (from an Owners row).
-function runCompareOn(uid, name){
-  if (!uid) return;
-  $("cmpUrl").value = LHC.profileUrlFor(uid, name || "");
-  switchView("compare");
-  runCompare();
-}
-// (downloadCsv removed in 1.0.8 — orphaned when the Owners/Compare CSV exports were dropped)
-
-/* ---------- OWNERS view ---------- */
-function ownersCacheLoad(){
-  const c = store.get("owners", null);
-  if (c && c.v === 1 && Array.isArray(c.rows)) {
-    S.owners = c.rows.map(r => ({uid:r.u, name:r.n, anon:!!r.a, ownCount:r.c,
-                                 owned: new Set((r.o||"").split(",").filter(Boolean))}));
-    S.ownersTs = c.ts;
-  }
-}
-function ownersCacheSave(){
-  store.set("owners", {v:1, ts:S.ownersTs, rows:S.owners.map(o =>
-    ({u:o.uid, n:o.name, a:o.anon?1:0, c:o.ownCount, o:[...o.owned].join(",")}))});
-}
-async function loadOwners(force){
-  const msg = $("ownMsg"), prog = $("ownProg");
-  if (S.owners && !force) return true;
-  if (!S.leaderboardRaw) {
-    msg.textContent = "The leaderboard feed didn't load" +
-      (S.feeds.leaderboard.st === "fail" ? ` (${S.feeds.leaderboard.detail})` : "") +
-      " — can't list collectors."; msg.className = "msg err"; return false;
-  }
-  const ranked = LHC.rankLeaders(S.leaderboardRaw);
-  msg.textContent = `${ranked.length} collectors listed — reading their collections…`;
-  msg.className = "msg"; prog.style.display = ""; prog.value = 0; prog.max = ranked.length;
-  try {
-    // Guest sign-in is best-effort (anon auth may be disabled → ADMIN_ONLY_
-    // OPERATION); the reads work without a token, same as profile sync + desktop.
-    let token = null; try { token = await LHC.anonSignIn(); } catch (ex) {}
-    const {map, failed} = await LHC.fsBatchGet(ranked.map(r=>r.uid), token,
-      (done,total) => { prog.value = done; msg.textContent = `Reading collections… ${done}/${total}`; });
-    S.owners = ranked.map(r => {
-      const p = map[r.uid];
-      return {uid:r.uid, name: r.name || "(unknown)",
-              anon: r.anon || (p ? p.anon : false),
-              ownCount: r.ownCount, owned: p ? p.own : new Set()};
-    });
-    S.ownersTs = Date.now(); ownersCacheSave();
-    msg.textContent = `Loaded ${S.owners.length} collections` +
-      (failed.size ? ` · ${failed.size} couldn't be read (private/unavailable)` : "") + ".";
-    msg.className = "msg ok";
-    return true;
-  } catch(ex) {
-    msg.textContent = "Loading collections failed: " + ex.message; msg.className = "msg err";
-    return false;
-  } finally { prog.style.display = "none"; renderOwnersMeta(); }
-}
-function renderOwnersMeta(){
-  $("ownLoad").textContent = S.owners
-    ? `Refresh (${Math.round((Date.now()-S.ownersTs)/3600e3)}h old)`
-    : "Load collections";
-}
-function ownerRow(o, extra, action){
-  const named = !(o.anon || LHC.isNoDisplayName(o.name));
-  const label = named ? esc(o.name) : `<span class="muted">(anonymous)</span>`;
-  const tap = named && action;
-  return `<div class="orow${tap ? " tap" : ""}"` +
-    (tap ? ` data-action="${action}" data-uid="${esc(o.uid)}" data-name="${esc(o.name)}"` : "") + `>` +
-    `<div class="grow">${label}${extra||""}</div>` +
-    `<span class="count">${o.ownCount} locks</span></div>`;
-}
-async function ownersSearch(){
-  if (!(await loadOwners(false))) return;
-  const q = $("ownFind").value.trim();
-  const belt = $("ownBelt").value;
-  let locks;
-  const searchText = l => LHC.foldLight(l.name + " " + (l.version || ""));
-  if (q) {
-    const fq = LHC.foldLight(q);
-    locks = S.catalog.filter(l => searchText(l).includes(fq));
-    const exact = locks.find(l => searchText(l) === fq || LHC.foldLight(l.name) === fq);
-    if (exact && locks.length === 1) locks = [exact];
-  } else locks = S.catalog.slice();
-  if (belt !== "All belts") locks = locks.filter(l => l.belt === belt);
-  if (!locks.length) { $("ownOut").innerHTML = `<div class="muted" style="padding:8px">No catalog lock matches.</div>`; return; }
-  if (locks.length > 25) locks = locks.slice(0, 25);
-  const out = [];
-  S.ownersResults = [];
-  for (const l of locks) {
-    const owners = S.owners.filter(o => o.owned.has(l.id));
-    owners.sort((a,b) => b.ownCount - a.ownCount);
-    const anonN = owners.filter(o => o.anon || LHC.isNoDisplayName(o.name)).length;
-    const shown = owners.filter(o => !(o.anon || LHC.isNoDisplayName(o.name)));
-    out.push(`<div class="grphead">${esc(l.name)}` +
-      (l.version ? ` <span style="text-transform:none;font-weight:500">(${esc(l.version)})</span>` : "") +
-      `${onBazaar(l.id) ? " ★" : ""}` +
-      ` · ${beltPill(l)} · ${owners.length} owner${owners.length===1?"":"s"}` +
-      (anonN ? ` (${anonN} anonymous)` : "") + `</div>`);
-    if (!owners.length) out.push(`<div class="muted" style="padding:0 4px 6px">No loaded collection owns it.</div>`);
-    out.push(shown.map(o => ownerRow(o, "", "compare")).join(""));
-    shown.forEach(o => S.ownersResults.push([l.name, LHC.dispBelt(l.belt,l.beltFull), o.name, o.ownCount]));
-  }
-  $("ownOut").innerHTML = out.join("");
-}
-async function wishlistTopOwners(){
-  if (!(await loadOwners(false))) return;
-  const wishIds = new Set([...S.wish].filter(id => S.byId.has(id)));
-  if (!wishIds.size) { $("ownOut").innerHTML = `<div class="muted" style="padding:8px">Your wishlist is empty (sync your profile first).</div>`; return; }
-  const scored = S.owners.map(o => ({o, hit:[...wishIds].filter(id => o.owned.has(id)).length}))
-    .filter(x => x.hit > 0).sort((a,b) => b.hit - a.hit).slice(0,10);
-  $("ownOut").innerHTML = `<div class="grphead">Top wishlist owners — who to approach for a trade</div>` +
-    (scored.length ? scored.map(x => ownerRow(x.o,
-        ` <span class="muted" style="font-size:12px">owns ${x.hit} of your wishlist</span>`, "compare")).join("")
-     : `<div class="muted" style="padding:8px">No loaded collection owns any of your wishlist locks.</div>`);
-  S.ownersResults = scored.map(x => ["wishlist_top", "", x.o.name, x.hit]);
-}
-function bazaarTopSellers(){
-  if (!S.bzMatch) { $("ownOut").innerHTML = `<div class="muted" style="padding:8px">Bazaar feed didn't load.</div>`; return; }
-  const wishIds = new Set([...S.wish].filter(id => S.byId.has(id)));
-  if (!wishIds.size) { $("ownOut").innerHTML = `<div class="muted" style="padding:8px">Your wishlist is empty (sync your profile first).</div>`; return; }
-  const per = new Map();
-  for (const [lockId, rows] of S.bzMatch.byLock) {
-    if (!wishIds.has(lockId)) continue;
-    for (const i of rows) {
-      const s = LHC.bzSeller(S.listings[i]) || "?";
-      if (!per.has(s)) per.set(s, new Set());
-      per.get(s).add(lockId);
-    }
-  }
-  const top = [...per.entries()].map(([s, ids]) => ({s, n: ids.size,
-      names: [...ids].slice(0,4).map(id => S.byId.get(id).name)}))
-    .sort((a,b) => b.n - a.n).slice(0,10);
-  $("ownOut").innerHTML = `<div class="grphead">Top Bazaar sellers — most of your wishlist for sale now</div>` +
-    (top.length ? top.map(t =>
-      `<div class="orow tap" data-action="bazaar" data-name="${esc(t.s)}"><div class="grow"><b>${esc(t.s)}</b>` +
-      `<div class="muted" style="font-size:12px">${esc(t.names.join(", "))}${t.n>4?"…":""}</div></div>` +
-      `<span class="count">${t.n} wishlist lock${t.n===1?"":"s"}</span></div>`).join("")
-     : `<div class="muted" style="padding:8px">None of your wishlist locks are on the Bazaar right now.</div>`);
-  S.ownersResults = top.map(t => ["bazaar_top_seller", "", t.s, t.n]);
-}
-
 /* ---------- render-all + nav ---------- */
 function renderAll(){
-  renderBeltChips(); renderLocks(); renderCollection(); renderOwnersMeta();
-  $("lockNames").innerHTML = S.catalog.map(l =>
-    `<option value="${esc(l.name + (l.version ? " (" + l.version + ")" : ""))}">`).join("");
-  $("ownBelt").innerHTML = ["All belts"].concat(LHC.CANONICAL_BELTS)
-    .map(b => `<option>${b}</option>`).join("");
+  renderBeltChips(); renderLocks(); renderCollection();
 }
 function switchView(v){
+  if (v === "owners") v = "locks";          // v1.7.0: Owners tab retired (view removed in 1.8.1)
   S.view = v;
   for (const s of document.querySelectorAll(".view")) s.classList.remove("active");
   $("view-"+v).classList.add("active");
@@ -1360,9 +1095,11 @@ function buildNav(){
     locks: '<svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>',
     collection: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>',
     compare: '<svg viewBox="0 0 24 24"><path d="M8 3v18M8 3l-4 4M8 3l4 4M16 21V3M16 21l-4-4M16 21l4-4"/></svg>',
-    owners: '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 20c.6-3.4 2.9-5 5.5-5s4.9 1.6 5.5 5"/><circle cx="17" cy="9" r="2.4"/><path d="M15.5 14.6c2.6.2 4.3 1.7 4.9 4.4"/></svg>',
   };
-  const labels = {locks:"Locks", collection:"Collection", compare:"Compare", owners:"Owners"};
+  // v1.7.0: no Owners tab — it read every collector's document from LPU's
+  // database, which LPU asked tools to stop doing. v1.8.1: its view and code
+  // are gone from this page (switchView still maps the old name to Locks).
+  const labels = {locks:"Locks", collection:"Collection", compare:"Compare"};
   if (LAN_MODE) {
     labels.search = "Search";
     icons.search = '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4-4"/></svg>';
@@ -1380,14 +1117,26 @@ function buildNav(){
    Search tab that asks the PC to run its eBay + top-marketplaces search. All
    /api calls are same-origin (no mixed content) and token-gated. */
 const LAN_MODE = (location.protocol === "http:");
-const LAN = { token: "", ok: false, profile: null };
+const LAN = { token: "", ok: false, profile: null, rejected: false, helloPromise: null };
 
-async function lanApi(path, opts){
+// v1.8.0: every call to the PC has a timeout (default 10 s; callers that
+// wait on LPU pass more) so a wrong address or a sleeping PC can't hang a
+// button forever. Network failures surface as "Can't reach your PC".
+async function lanApi(path, opts, timeoutMs){
   const o = Object.assign({}, opts || {});
   o.headers = Object.assign({}, o.headers || {},
     LAN.token ? {"X-LH-Token": LAN.token} : {});
   o.cache = "no-store";
-  return fetch(path, o);
+  const ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  let timer = null;
+  if (ac){ o.signal = ac.signal; timer = setTimeout(() => ac.abort(), timeoutMs || 10000); }
+  try {
+    return await fetch(path, o);
+  } catch (ex) {
+    const aborted = ex && (ex.name === "AbortError");
+    throw new Error(aborted ? "no answer from your PC (timed out)"
+                            : "can't reach your PC — is Lock Hunter open, same Wi-Fi?");
+  } finally { if (timer) clearTimeout(timer); }
 }
 function setLanConn(text, kind){
   const c = $("lanConn"); if (!c) return;
@@ -1395,18 +1144,51 @@ function setLanConn(text, kind){
   const pr = $("lanPairRow");
   if (pr) pr.style.display = (kind === "err" || !LAN.token) ? "flex" : "none";
 }
-async function lanHello(){
-  if (!LAN.token){ setLanConn("Enter the pairing code shown on your PC (Lock Hunter → Phone link).", "err"); return; }
+// v1.8.0: one hello at a time (a second caller awaits the one in flight);
+// autoSync=false lets Sync/Compare re-establish the link without the hello
+// running its own collection sync first (they do their own right after).
+function lanHello(autoSync){
+  if (LAN.helloPromise) return LAN.helloPromise;
+  const p = _lanHello(autoSync !== false).finally(() => { LAN.helloPromise = null; });
+  LAN.helloPromise = p;
+  return p;
+}
+// Sync / Compare call this first: if the PC link was lost (page opened while
+// the PC slept, "Lost contact" mid-search), try to reconnect before refusing —
+// otherwise "then try again" could never succeed without a reload (v1.8.0).
+async function ensurePc(){
+  if (LAN_MODE && LAN.token && !LAN.ok) { try { await lanHello(false); } catch(e){} }
+}
+async function _lanHello(autoSync){
+  if (!LAN.token){ setLanConn("Enter the pairing code shown on your PC (Lock Hunter → Settings… → Phone link → Set up…).", "err"); return; }
+  setLanConn("Connecting to your PC…", "");
   try {
-    const r = await lanApi("/api/hello");
-    if (r.status === 401){ LAN.ok = false; setLanConn("Your PC rejected that pairing code — check it and try again.", "err"); return; }
+    const r = await lanApi("/api/hello", null, 8000);
+    if (r.status === 401){
+      LAN.ok = false; LAN.rejected = true;
+      setLanConn("Your PC rejected that pairing code — check it and try again.", "err");
+      // first-run card still open with a stale saved code: offer the box right there
+      const ob = $("onboard");
+      if (ob && ob.classList.contains("open")) {
+        const pr = $("obPairRow"); if (pr) pr.style.display = "flex";
+        $("obMsg").textContent = "Your PC rejected the saved pairing code — enter the current one shown in Lock Hunter (Settings… → Phone link → Set up…)."; $("obMsg").className = "msg err";
+      }
+      return;
+    }
     if (!r.ok){ LAN.ok = false; setLanConn("PC reachable but returned HTTP " + r.status + ".", "err"); return; }
     const j = await r.json();
-    LAN.ok = true; LAN.profile = j.profile || null;
+    LAN.ok = true; LAN.rejected = false; LAN.profile = j.profile || null;
     setLanConn("Connected to Lock Hunter" + (j.version ? " v" + j.version : "") + " on your PC.", "ok");
     lanLoadPriority();
-    if (LAN.profile && LAN.profile.url && !store.get("profile", null)){
-      try { await syncProfile(LAN.profile.url, {textContent:"", className:""}); } catch(e){}
+    // v1.7.0: the PC is the source of the collection now — refresh it on
+    // every successful connect, so a desktop profile refresh shows here
+    if (autoSync) {
+      try {
+        if (await syncProfile((LAN.profile && LAN.profile.url) || "", {textContent:"", className:""})) {
+          const ob = $("onboard");
+          if (ob && ob.classList.contains("open")) setTimeout(() => ob.classList.remove("open"), 700);
+        }
+      } catch(e){}
     }
   } catch(ex){
     LAN.ok = false;
@@ -1460,11 +1242,21 @@ async function lanBatch(kind, n){
     const {job, total} = await r.json();
     LAN.batchJob = job;
     $("lanCancel").style.display = "";
+    let misses = 0;
     for (let i = 0; i < 14400; i++){
       await new Promise(res => setTimeout(res, 1000));
       let s;
-      try { s = await (await lanApi("/api/status?job=" + encodeURIComponent(job))).json(); }
-      catch(e){ continue; }
+      try {
+        const sr = await lanApi("/api/status?job=" + encodeURIComponent(job));
+        if (sr.status === 404 || sr.status === 401) throw new Error("gone");
+        s = await sr.json();
+        if (s && s.ok === false) throw new Error("gone");   // PC restarted / job evicted
+        misses = 0;
+      } catch(e){
+        if (String(e.message) === "gone"){ msg.textContent = "The PC no longer has this batch — was Lock Hunter restarted? Results shown so far are kept."; msg.className = "msg err"; return; }
+        if (++misses >= 25){ LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err"); msg.textContent = "Lost contact with the PC — results shown so far are kept."; msg.className = "msg err"; return; }
+        continue;
+      }
       LAN.lastRows = s.results || [];
       renderLanBatch(LAN.lastRows);
       const p = (s.progress && s.progress.length) ? s.progress[s.progress.length - 1] : "";
@@ -1509,11 +1301,21 @@ async function lanSearch(lock, belt){
     if (!r.ok){ msg.textContent = "Couldn't start the search (HTTP " + r.status + ")."; msg.className = "msg err"; return; }
     const {job} = await r.json();
     if (!job){ msg.textContent = "The PC didn't start a search."; msg.className = "msg err"; return; }
+    let misses = 0;
     for (let i = 0; i < 900; i++){
       await new Promise(res => setTimeout(res, 1000));
       let s;
-      try { s = await (await lanApi("/api/status?job=" + encodeURIComponent(job))).json(); }
-      catch(e){ continue; }
+      try {
+        const sr = await lanApi("/api/status?job=" + encodeURIComponent(job));
+        if (sr.status === 404 || sr.status === 401) throw new Error("gone");
+        s = await sr.json();
+        if (s && s.ok === false) throw new Error("gone");   // PC restarted / job evicted
+        misses = 0;
+      } catch(e){
+        if (String(e.message) === "gone"){ msg.textContent = "The PC no longer has this search — was Lock Hunter restarted? Try again."; msg.className = "msg err"; return; }
+        if (++misses >= 25){ LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err"); msg.textContent = "Lost contact with the PC — try again once it's reachable."; msg.className = "msg err"; return; }
+        continue;
+      }
       if (s.progress && s.progress.length) msg.textContent = s.progress[s.progress.length - 1];
       if (s.state === "done"){ LAN.lastRows = s.results || []; renderLanResults(LAN.lastRows); msg.textContent = lanCountLine(LAN.lastRows); msg.className = "msg ok"; return; }
       if (s.state === "error"){ msg.textContent = "Search failed on the PC. " + ((s.progress || []).slice(-1)[0] || ""); msg.className = "msg err"; return; }
@@ -1521,7 +1323,7 @@ async function lanSearch(lock, belt){
     msg.textContent = "Search timed out."; msg.className = "msg err";
   } catch(ex){
     msg.textContent = "Lost contact with the PC: " + ex.message; msg.className = "msg err";
-    LAN.ok = false;
+    LAN.ok = false; setLanConn("Lost contact with the PC — tap Connect (or run a search) to reconnect.", "err");
   } finally { $("lanGo").disabled = false; }
 }
 function lanRowHTML(r){
@@ -1715,25 +1517,21 @@ async function boot(){
   $("hdrVer").textContent = "v" + LHC.VERSION;
   { const ov = $("obVer"); if (ov) ov.textContent = "phone companion · v" + LHC.VERSION; }
   if (LAN_MODE) lanInit();
-  setFeed("catalog","…"); setFeed("stats","…"); setFeed("bazaar","…"); setFeed("leaderboard","…");
-  ownersCacheLoad();
+  setFeed("catalog","…"); setFeed("stats","…"); setFeed("bazaar","…");
+  // v1.8.0: the Owners feature is retired — drop its cached copy of other
+  // collectors' owned-lock lists (data from LPU's database) that pre-1.7.0
+  // pages left behind (C14).
+  store.del("owners");
   $("lockFind").oninput = renderLocks;
   $("lockShow").onchange = renderLocks;
   $("cmpBtn").onclick = runCompare;
+  if (!LAN_MODE) {   // web copy: Compare runs through the PC — say so up front, disable the button (C20)
+    const wn = $("cmpWebNote");
+    if (wn){ wn.style.display = ""; wn.textContent = "Compare runs through Lock Hunter on your PC. Open the copy served by your PC (Settings… → Phone link → Set up…) to use it."; }
+    $("cmpBtn").disabled = true;
+  }
   // Compare rows -> open that lock's detail sheet
   $("cmpOut").onclick = (e) => { const r = e.target.closest(".orow[data-lock]"); if (r){ const l = S.byId.get(r.dataset.lock); if (l) openLock(l); } };
-  // Owner rows -> run a Compare on that person, or open their bazaar listings
-  $("ownOut").onclick = (e) => {
-    const r = e.target.closest(".orow[data-action]");
-    if (!r) return;
-    if (r.dataset.action === "compare") runCompareOn(r.dataset.uid, r.dataset.name);
-    else if (r.dataset.action === "bazaar") window.open(LHC.bazaarSellerUrl(r.dataset.name, r.dataset.uid), "_blank", "noopener");
-  };
-  $("ownSearch").onclick = ownersSearch;
-  $("ownFind").addEventListener("keydown", e => { if (e.key === "Enter") ownersSearch(); });
-  $("ownLoad").onclick = () => loadOwners(true).then(() => renderOwnersMeta());
-  $("wishTop").onclick = wishlistTopOwners;
-  $("bzTop").onclick = bazaarTopSellers;
   $("sheetBack").onclick = closeSheet;
   setupSheetSwipe();
   // (feed-status pills + "Re-test data feeds" button removed per request)
@@ -1745,6 +1543,34 @@ async function boot(){
   // onboarding
   if (!S.profile && !store.get("obskip", false)) {
     $("onboard").classList.add("open");
+    if (!LAN_MODE) {
+      // web copy: this page cannot sync — say so up front, no dead-end button (C20)
+      const go = $("obGo"); go.style.display = "none";
+      $("obUrl").style.display = "none";
+      const blurb = document.querySelector("#onboard .card .muted");
+      if (blurb) blurb.textContent = "Your owned locks + wishlist come from Lock Hunter on your PC — this web copy can browse the catalog and show what was last synced, nothing more.";
+      $("obMsg").textContent = NO_PC_SYNC_MSG; $("obMsg").className = "msg";
+    } else if (!LAN.token) {
+      // PC-served copy but not paired yet: pairing lives on the Search tab, which
+      // this overlay covers — so offer the pairing box right here (B6)
+      const pr = $("obPairRow"); if (pr) pr.style.display = "flex";
+      $("obMsg").textContent = "Enter the pairing code shown in Lock Hunter (Settings… → Phone link → Set up…), then Sync."; $("obMsg").className = "msg";
+      $("obPairGo").onclick = async () => {
+        const t = ($("obTok").value || "").trim();
+        if (!t) return;
+        LAN.token = t; store.set("phone_token", t);
+        $("obMsg").textContent = "Connecting to your PC…"; $("obMsg").className = "msg";
+        LAN.rejected = false;
+        await lanHello(false);
+        if (LAN.ok){
+          // sync with THIS message element, so a failure's reason is visible here
+          if (await syncProfile($("obUrl").value.trim(), $("obMsg")))
+            setTimeout(() => $("onboard").classList.remove("open"), 700);
+        }
+        else if (LAN.rejected){ $("obMsg").textContent = "Your PC rejected that pairing code — check it (Lock Hunter → Settings… → Phone link → Set up…) and try again."; $("obMsg").className = "msg err"; }
+        else { $("obMsg").textContent = "Your PC didn't answer — check that Lock Hunter is open on the same Wi-Fi, then try again."; $("obMsg").className = "msg err"; }
+      };
+    }
     $("obGo").onclick = async () => {
       if (await syncProfile($("obUrl").value.trim(), $("obMsg")))
         setTimeout(() => $("onboard").classList.remove("open"), 700);
@@ -1754,7 +1580,8 @@ async function boot(){
   await loadCatalog(false);
   renderAll();
   loadBazaar().then(() => { renderAll(); });
-  loadLeaderboard();
+  // v1.7.0/1.8.1: the Owners view and everything that fed it (the leaderboard
+  // feed, the direct database readers) are gone from this page.
 }
 document.addEventListener("DOMContentLoaded", boot);
 })();
