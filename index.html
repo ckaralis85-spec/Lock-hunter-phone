@@ -238,18 +238,18 @@ a.plain{color:var(--accent); text-decoration:none}
   <div class="card">
     <h2>Sync your collection</h2>
     <div class="muted" style="margin-bottom:10px">
-      Your owned locks + wishlist come from Lock Hunter on your PC: open this page from the
-      address shown under <b>Phone link</b> (same Wi-Fi) and tap Sync. Optionally paste your
-      <a class="plain" href="https://lpubelts.com" target="_blank" rel="noopener">lpubelts.com</a>
-      profile link so “open profile” works.
+      Paste your <a class="plain" href="https://lpubelts.com" target="_blank" rel="noopener">lpubelts.com</a>
+      profile link and your owned locks + wishlist load straight from LPU — no PC needed.
+      (Open lpubelts.com, go to your profile, copy the address.) You can always change it
+      later on the <b>Collection</b> tab.
     </div>
     <div id="obPairRow" class="row" style="display:none;margin-bottom:8px">
       <input id="obTok" type="text" class="grow" placeholder="Pairing code from your PC" autocapitalize="off" autocomplete="off" spellcheck="false">
       <button id="obPairGo">Connect</button>
     </div>
-    <input type="url" id="obUrl" placeholder="https://lpubelts.com/#/profile/… (optional)">
+    <input type="url" id="obUrl" placeholder="https://lpubelts.com/#/profile/…">
     <div class="row" style="margin-top:10px">
-      <button class="primary grow" id="obGo">Sync from my PC</button>
+      <button class="primary grow" id="obGo">Load my collection</button>
       <button id="obSkip">Skip</button>
     </div>
     <div class="msg" id="obMsg"></div>
@@ -265,7 +265,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.8.3";
+  const VERSION = "1.8.4";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -798,6 +798,77 @@ const LHC = (() => {
     return {byLock, rowLock};
   }
 
+  // ---- LPU's profile service (desktop v7.0.1: LPU_PROFILE_API /
+  // LPU_APP_TOKEN / _lpu_api_payload / _lpu_api_ids / fetch_profile_via_api).
+  // v1.8.4: the page reads a collection itself instead of asking the PC for
+  // it, so pasting a profile link works with the PC off (and on the hosted
+  // copy, which has no PC at all). ONE GET per sync, LPU's own endpoint,
+  // Lock Hunter's own service token — never LPU's database.
+  const LPU_PROFILE_API = "https://explore.lpubelts.com/API/profile/";
+  const LPU_APP_TOKEN = "cdfac03d";
+  function lpuProfileUrl(uid, token){
+    return LPU_PROFILE_API + "?token=" + encodeURIComponent(token || LPU_APP_TOKEN) +
+           "&id=" + encodeURIComponent(String(uid || ""));
+  }
+  // _lpu_api_payload: pick the payload object out of their response,
+  // whatever its position.
+  function lpuPayload(data){
+    if (data && typeof data === "object" && !Array.isArray(data)) return data;
+    if (Array.isArray(data)){
+      for (const el of data)
+        if (el && typeof el === "object" && !Array.isArray(el)
+            && ("collections" in el || "status" in el)) return el;
+    }
+    return null;
+  }
+  // _lpu_api_ids
+  function lpuIds(collections, keys){
+    const out = new Set();
+    for (const k of keys){
+      const v = (collections || {})[k];
+      if (Array.isArray(v))
+        for (const x of v)
+          if ((typeof x === "string" || typeof x === "number") && String(x)) out.add(String(x));
+    }
+    return out;
+  }
+  // The body of fetch_profile_via_api after the HTTP call: same shape checks,
+  // same refusals, same wording. Throws Error with `.kind` set to "rejected"
+  // where the desktop raises ProfileKeyRejected. An EMPTY collection is a
+  // valid answer, not an error (desktop review B1).
+  function lpuProfileFromResponse(uid, data){
+    const payload = lpuPayload(data);
+    if (!payload) throw new Error("unexpected response shape from the profile service");
+    // str(payload.get("status") or ""): only a string or a number reads as a
+    // status; anything else stringifies to something that can't start "200"
+    const rawSt = payload.status;
+    const st = (!rawSt) ? ""
+             : (typeof rawSt === "string") ? rawSt
+             : (typeof rawSt === "number") ? String(rawSt)
+             : JSON.stringify(rawSt);
+    if (st && st.indexOf("200") !== 0){
+      if (st.indexOf("418") === 0)
+        throw new Error("LPU has no profile with that id — check the profile link");
+      if (st.indexOf("401") === 0 || st.indexOf("403") === 0){
+        const e = new Error("LPU's profile service refused this request (" + st + ").");
+        e.kind = "rejected"; throw e;
+      }
+      throw new Error("profile service said: " + st);
+    }
+    const got = String(payload.userId || "");
+    if (got && got !== String(uid))
+      throw new Error("the profile service returned a different member (" + got +
+                      ") than the one requested (" + uid + ") — not using it");
+    // `cols.get(...)` on the desktop: a truthy non-dict raises there, so it is
+    // a bad shape here too — never an empty collection we would then SAVE.
+    let cols = payload.collections;
+    if (!cols || (Array.isArray(cols) && !cols.length)) cols = {};
+    else if (typeof cols !== "object" || Array.isArray(cols))
+      throw new Error("unexpected response shape from the profile service");
+    return { own: lpuIds(cols, ["own", "safelocksOwn"]),
+             wish: lpuIds(cols, ["wishlist"]) };
+  }
+
   // ---- extract_profile_uid (L6665)
   function extractUid(url){
     const m = /profile\/([A-Za-z0-9_-]{10,})/.exec(String(url||""));
@@ -842,6 +913,8 @@ const LHC = (() => {
           bzSeller, bzMake, bzModel, bzBelt, bzLockName, bzPrice,
           bzEntryKey, bazaarLockUrl, collectListings, isLockListing, matchBazaar,
           extractUid,
+          LPU_PROFILE_API, LPU_APP_TOKEN, lpuProfileUrl, lpuPayload, lpuIds,
+          lpuProfileFromResponse,
           fetchJson, fetchFirstJson,
           profileUrlFor, bazaarSellerUrl};
 })();
@@ -959,90 +1032,185 @@ async function loadBazaar(){
   } catch(ex) { setFeed("bazaar","fail", ex.message); }
 }
 /* ---------- profile sync ---------- */
-// v1.7.0: your collection comes from Lock Hunter on your PC (its saved
-// own/wishlist), over the home Wi-Fi link. The phone never reads LPU's
-// database — LPU asked apps to stop doing that.
-const NO_PC_SYNC_MSG = "This web copy can't sync a collection: it loads from Lock Hunter on your PC. " +
-  "Open the copy served by your PC — the address under Settings… → Phone link → Set up… (same Wi-Fi) — " +
-  "and it syncs by itself. (LPU asked apps to stop reading their database directly.)";
-// v1.8.0: say what is actually wrong, depending on where we are (B6):
-//   web copy (no PC at all) → NO_PC_SYNC_MSG
-//   PC-served copy, no pairing code yet → tell them to pair (Search tab)
-//   PC-served copy, paired but the PC didn't answer → can't reach the PC
+// v1.8.4 (per Ferf): your collection comes from your own LPU PROFILE LINK,
+// read here on the phone — one GET to LPU's profile service with Lock
+// Hunter's own token, exactly the call the desktop makes. It works with the
+// PC switched off and on the hosted copy, which has no PC at all. LPU's
+// DATABASE is still never touched; v1.7.0-1.8.3 asked the PC for the
+// collection instead, which meant the hosted copy could not sync at all.
+// v1.8.0: say what is actually wrong, depending on where we are (B6). Since
+// v1.8.4 this is only for the features that still NEED the PC — Compare and
+// live search; the collection no longer does.
 function pcStateMessage(feature){
   if (typeof LAN === "undefined" || !LAN_MODE) {
-    if (feature === "Compare")
-      return "Compare runs through Lock Hunter on your PC (the PC does the one read of the other member's profile). " +
-        "Open the copy served by your PC — the address under Settings… → Phone link → Set up… (same Wi-Fi) — to use it. " +
-        "(LPU asked apps to stop reading their database directly.)";
-    return NO_PC_SYNC_MSG;
+    return feature + " runs through Lock Hunter on your PC. Open the copy your PC serves — " +
+      "the address under Settings… → Phone link → Set up… (same Wi-Fi) — to use it. " +
+      "(Your own collection loads here from your profile link, no PC needed.)";
   }
   if (LAN.ok) return "";
   if (!LAN.token) return feature + " needs your PC: enter the pairing code from Lock Hunter first (Search tab, or the box in the first-run card).";
   if (LAN.rejected) return "Your PC rejected the saved pairing code — enter the current one (Search tab; Lock Hunter → Settings… → Phone link → Set up…).";
   return "Can't reach your PC right now — make sure Lock Hunter is open and your phone is on the same Wi-Fi, then try again.";
 }
-async function syncProfile(url, msgEl){
-  msgEl = msgEl || {textContent:"", className:""};
-  await ensurePc();
-  const why = pcStateMessage("Syncing");
-  if (why) { msgEl.textContent = why; msgEl.className = "msg err"; return false; }
-  msgEl.textContent = "Reading your collection from your PC…"; msgEl.className = "msg";
+// The profile link this phone should use: what was just typed, else what is
+// saved here, else the link the PC has (so a paired phone syncs with nothing
+// typed at all, as it did before v1.8.4).
+function profileLinkFor(url){
+  return String(url || (S.profile && S.profile.url) ||
+                (typeof LAN !== "undefined" && LAN.profile && LAN.profile.url) || "").trim();
+}
+// ONE GET to LPU's profile service. A browser can refuse this in a way the
+// desktop never sees — if LPU's endpoint sends no CORS header the request is
+// blocked before it leaves, and fetch rejects with a bare TypeError. Say so
+// in words instead of "failed to fetch".
+function lpuBlocked(){
+  const e = new Error("this phone couldn't reach LPU's profile service " +
+    "(no answer, or your browser blocked the request). Check you're online — " +
+    "if it keeps happening, sync on the PC instead and the phone will pick it up.");
+  e.kind = "blocked"; return e;
+}
+async function fetchProfileFromLPU(uid){
+  // the desktop passes timeout=30 to requests.get; a phone on a half-open
+  // Wi-Fi link would otherwise sit on "Reading your collection…" for ever.
+  // The guard has to cover the BODY as well as the headers: fetch() resolves
+  // the moment the headers land, so cancelling the abort there left the body
+  // read unbounded — a response that stops mid-stream hung the sync, and with
+  // it the hello this sync runs inside (Connect and Compare with it).
+  const ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  const timer = ac ? setTimeout(() => ac.abort(), 20000) : null;
+  try {
+    let r;
+    try {
+      r = await fetch(LHC.lpuProfileUrl(uid), ac ? {cache: "no-store", signal: ac.signal} : {cache: "no-store"});
+    } catch (ex) { throw lpuBlocked(); }
+    if (r.status === 401 || r.status === 403){
+      const e = new Error("LPU's profile service refused this request (HTTP " + r.status +
+        "). If it happens for every profile, Lock Hunter's access to the service has " +
+        "changed — check for a newer Lock Hunter.");
+      e.kind = "rejected"; throw e;
+    }
+    if (r.status === 429) throw new Error("LPU's profile service is rate-limiting us (HTTP 429). Try again shortly.");
+    if (!r.ok) throw new Error("LPU profile service returned HTTP " + r.status);
+    let data = null;
+    try { data = await r.json(); }
+    catch (ex) {
+      if (ac && ac.signal.aborted) throw lpuBlocked();   // stalled mid-body
+      throw new Error("LPU profile service didn't return JSON");
+    }
+    return LHC.lpuProfileFromResponse(uid, data);   // throws with LPU's own wording
+  } finally { if (timer) clearTimeout(timer); }
+}
+// last resort only: if LPU can't be reached FROM THE PHONE but the PC is
+// right there and already has the collection, use it rather than leaving the
+// user with nothing. Always says which source it used.
+async function syncProfileViaPc(msgEl){
+  if (typeof LAN === "undefined" || !LAN_MODE || !LAN.ok) return null;
   try {
     const r = await lanApi("/api/collection");
-    if (r.status === 404) throw new Error("your PC's Lock Hunter is older than this page — update it to v6.2.8+");
-    let j = null;
-    try { j = await r.json(); } catch (_) { j = null; }
-    // v1.8.0 (C18): the PC now says WHY a read failed ({ok:false, error}) — show that
-    // instead of mistaking a failed read for an empty collection
-    if (!r.ok || !j || j.ok === false) throw new Error((j && j.error) || ("PC returned HTTP " + r.status));
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || j.ok === false) return null;
     const own = new Set((j.own || []).map(String)), wish = new Set((j.wish || []).map(String));
-    if (!own.size && !wish.size)
-      throw new Error("your PC has no collection saved yet — import your LPU profile in Lock Hunter first");
-    // the PC's saved link is authoritative (a link changed in the PC's
-    // Settings shows here at once); anything typed on the phone is only a
-    // fallback for the "open profile" link
-    const purl = String(j.url || url || (LAN.profile && LAN.profile.url) || "");
-    const uid = LHC.extractUid(purl) || (LAN.profile && LAN.profile.uid) || "";
-    S.own = own; S.wish = wish;
-    S.profile = {uid, url: purl, ts: Date.now(), ownN: own.size, wishN: wish.size};
-    store.set("own", [...own]); store.set("wish", [...wish]);
-    store.set("profile", S.profile);
-    const done = `Synced from your PC: ${own.size} owned, ${wish.size} wishlist.`;
-    msgEl.textContent = done; msgEl.className = "msg ok";
-    renderAll();
-    // renderAll() rebuilds the profile card, replacing its message element —
-    // put the confirmation on the fresh one too (v1.8.0), so a manual
-    // "Update profile" actually shows what it just did
-    if (msgEl && msgEl.id) { const again = $(msgEl.id); if (again && again !== msgEl) { again.textContent = done; again.className = "msg ok"; } }
-    return true;
-  } catch(ex) {
-    msgEl.textContent = "Sync failed: " + ex.message; msgEl.className = "msg err";
-    return false;
-  }
+    if (!own.size && !wish.size) return null;
+    return {own, wish, url: String(j.url || "")};
+  } catch (e) { return null; }
 }
+async function syncProfile(url, msgEl, opts){
+  msgEl = msgEl || {textContent:"", className:""};
+  opts = opts || {};
+  // the collection no longer needs the PC, but a Sync is still a good moment
+  // to nudge a sleeping one back — in the background, so it never delays the
+  // LPU read. ensurePc() swallows its own errors.
+  try { ensurePc(); } catch(e){}
+  let link = profileLinkFor(url);
+  let uid = LHC.extractUid(link);
+  // No link anywhere yet? A connected PC knows its own — take it and use it
+  // for the LPU read, so a paired phone still syncs with nothing typed. This
+  // is the one path where the PC is worth waiting for.
+  if (!uid){
+    await ensurePc();
+    const first = await syncProfileViaPc();
+    if (!first){
+      msgEl.textContent = "Paste your lpubelts.com profile link — the one with /profile/<id> in it. " +
+        "Open lpubelts.com, go to your profile and copy the address.";
+      msgEl.className = "msg err"; return false;
+    }
+    link = String(first.url || ""); uid = LHC.extractUid(link) || "";
+    if (!uid){                                  // PC has the lists but no link
+      finishSync(first.own, first.wish, "", link, "your PC", msgEl);
+      return true;
+    }
+  }
+  msgEl.textContent = "Reading your collection from LPU…"; msgEl.className = "msg";
+  let own = null, wish = null, from = "LPU";
+  try {
+    const got = await fetchProfileFromLPU(uid);
+    own = got.own; wish = got.wish;
+  } catch(ex) {
+    // The PC may stand in for a call that never GOT THROUGH — never for an
+    // answer. When LPU says "no such profile", "that's a different member" or
+    // "refused", handing over the PC's collection would save one member's
+    // locks under another member's link. And even then, only if the PC holds
+    // the SAME member: the desktop refuses a mismatched userId (v7.0.1
+    // fetch_profile_via_api) and so must this.
+    const viaPc = (ex.kind === "blocked") ? await syncProfileViaPc() : null;
+    const pcUid = viaPc ? (LHC.extractUid(String(viaPc.url || "")) || "") : "";
+    if (!viaPc || pcUid !== uid){
+      msgEl.textContent = "Sync failed: " + ex.message; msgEl.className = "msg err"; return false;
+    }
+    own = viaPc.own; wish = viaPc.wish; from = "your PC";   // link stays the user's
+  }
+  // A quiet background sync must not wipe a saved collection because LPU
+  // answered empty this once — the desktop's silent refresh keeps the old
+  // lists too (review B1); only an explicit tap applies an empty answer.
+  if (opts.silent && !own.size && !wish.size && (S.own.size || S.wish.size)) return false;
+  finishSync(own, wish, uid, link, from, msgEl);
+  return true;
+}
+function finishSync(own, wish, uid, link, from, msgEl){
+  S.own = own; S.wish = wish;
+  S.profile = {uid, url: link, ts: Date.now(), ownN: own.size, wishN: wish.size};
+  store.set("own", [...own]); store.set("wish", [...wish]);
+  store.set("profile", S.profile);
+  // an empty collection is a valid answer, not a failure (desktop review B1)
+  const done = (!own.size && !wish.size)
+    ? `Synced from ${from}: that profile has no owned or wishlist locks saved yet.`
+    : `Synced from ${from}: ${own.size} owned, ${wish.size} wishlist.`;
+  msgEl.textContent = done; msgEl.className = "msg ok";
+  renderAll();
+  // renderAll() rebuilds the profile card, replacing its message element —
+  // put the confirmation on the fresh one too (v1.8.0), so a manual
+  // "Update profile" actually shows what it just did
+  if (msgEl && msgEl.id) { const again = $(msgEl.id); if (again && again !== msgEl) { again.textContent = done; again.className = "msg ok"; } }
+}
+// v1.8.4: the link box is ALWAYS here. Before, it only existed until the
+// first sync — after that the card showed a count and an Update button, so a
+// user who left the page to fetch their profile link came back to find the
+// box gone and no way to enter or change the link (reported by Ferf).
 function renderProfileCard(){
   const el = $("profileBody");
-  if (S.profile) {
-    const age = Math.round((Date.now()-S.profile.ts)/3600e3);
-    el.innerHTML =
-      `<div class="muted">Synced ${S.profile.ownN} owned + ${S.profile.wishN} wishlist` +
-      ` · ${age < 1 ? "under an hour" : age + "h"} ago</div>` +
-      `<div class="row" style="margin-top:8px">` +
-      `<button class="primary small" id="profSync">Update profile</button>` +
-      (/^https?:\/\//i.test(String(S.profile.url || "")) ? `<a class="plain" style="font-size:12.5px" target="_blank" rel="noopener" href="${esc(S.profile.url)}">open profile</a>` : "") + `</div>` +
-      `<div class="msg" id="profMsg"></div>`;
-    $("profSync").onclick = () => syncProfile(S.profile.url, $("profMsg"));
-  } else if (!LAN_MODE) {
-    // web copy: no PC here — say so instead of offering a button that can only fail (C20)
-    el.innerHTML = `<div class="muted">${esc(NO_PC_SYNC_MSG)}</div>`;
-  } else {
-    el.innerHTML =
-      `<div class="muted">Not synced. On your home Wi-Fi, connected to Lock Hunter, your owned + wishlist load from your PC. (Optional: paste your lpubelts profile link so “open profile” works.)</div>` +
-      `<input type="url" id="profUrl" placeholder="https://lpubelts.com/#/profile/… (optional)" style="margin-top:8px">` +
-      `<div class="row" style="margin-top:8px"><button class="primary small" id="profGo">Sync from my PC</button></div>` +
-      `<div class="msg" id="profMsg"></div>`;
-    $("profGo").onclick = () => syncProfile($("profUrl").value.trim(), $("profMsg"));
+  // the card is rebuilt by every renderAll() — including the one the Bazaar
+  // feed fires whenever it lands. Keep whatever is half-typed in the box.
+  const live = $("profUrl");
+  const typing = live ? { v: live.value, focus: (document.activeElement === live),
+                          s: live.selectionStart, e: live.selectionEnd } : null;
+  const saved = String((S.profile && S.profile.url) || "");
+  const pcLink = String((typeof LAN !== "undefined" && LAN.profile && LAN.profile.url) || "");
+  const head = S.profile
+    ? `<div class="muted">Synced ${S.profile.ownN} owned + ${S.profile.wishN} wishlist` +
+      ` · ${(Math.round((Date.now()-S.profile.ts)/3600e3) < 1) ? "under an hour" : Math.round((Date.now()-S.profile.ts)/3600e3) + "h"} ago</div>`
+    : `<div class="muted">Paste your <a class="plain" href="https://lpubelts.com" target="_blank" rel="noopener">lpubelts.com</a> profile link to load your owned locks and wishlist. It's read straight from LPU, so it works with your PC switched off.</div>`;
+  el.innerHTML = head +
+    `<input type="url" id="profUrl" placeholder="https://lpubelts.com/#/profile/…" style="margin-top:8px" value="${esc(saved || pcLink)}">` +
+    `<div class="row" style="margin-top:8px">` +
+    `<button class="primary small" id="profGo">${S.profile ? "Update profile" : "Load my collection"}</button>` +
+    (/^https?:\/\//i.test(saved) ? `<a class="plain" style="font-size:12.5px" target="_blank" rel="noopener" href="${esc(saved)}">open profile</a>` : "") +
+    `</div>` +
+    `<div class="msg" id="profMsg"></div>`;
+  $("profGo").onclick = () => syncProfile($("profUrl").value.trim(), $("profMsg"));
+  if (typing && typing.v && typing.v !== (saved || pcLink)){
+    const box = $("profUrl"); box.value = typing.v;
+    if (typing.focus){ try { box.focus(); box.setSelectionRange(typing.s, typing.e); } catch(e){} }
   }
 }
 
@@ -1177,9 +1345,8 @@ function renderCollection(){
       `<div class="track"><div class="fill" style="width:${w}%;background:${color};${edge}"></div></div>` +
       `<div class="bn">${own} / ${tot}</div></div>`;
   }).join("");
-  $("beltNote").textContent = S.profile ? "" : (LAN_MODE
-    ? "Sync your profile above and these fill in automatically."
-    : "Open the copy served by your PC (Settings… → Phone link → Set up…) — your collection syncs there and these fill in.");
+  $("beltNote").textContent = S.profile ? ""
+    : "Paste your lpubelts profile link above and these fill in automatically.";
   const rare = arr => arr.slice().sort((a,b) =>
       ((a.count??0)-(b.count??0)) || a.name.localeCompare(b.name)).slice(0,10);
   const owned = S.catalog.filter(l => S.own.has(l.id));
@@ -1395,7 +1562,9 @@ async function _lanHello(autoSync){
     // every successful connect, so a desktop profile refresh shows here
     if (autoSync) {
       try {
-        if (await syncProfile((LAN.profile && LAN.profile.url) || "", {textContent:"", className:""})) {
+        // "" — NOT the PC's link: profileLinkFor prefers what this phone has
+        // saved, so a profile chosen here survives every reconnect (v1.8.4).
+        if (await syncProfile("", {textContent:"", className:""}, {silent: true})) {
           const ob = $("onboard");
           if (ob && ob.classList.contains("open")) setTimeout(() => ob.classList.remove("open"), 700);
         }
@@ -1914,6 +2083,7 @@ function lanInit(){
 }
 /* ========================== end LAN live-search mode ==================== */
 async function boot(){
+  try { window.__lh_redraw = renderAll; } catch(e){}   // test hook (both copies)
   buildNav();
   $("hdrVer").textContent = "v" + LHC.VERSION;
   { const ov = $("obVer"); if (ov) ov.textContent = "phone companion · v" + LHC.VERSION; }
@@ -1947,17 +2117,14 @@ async function boot(){
   if (!S.profile && !store.get("obskip", false)) {
     $("onboard").classList.add("open");
     if (!LAN_MODE) {
-      // web copy: this page cannot sync — say so up front, no dead-end button (C20)
-      const go = $("obGo"); go.style.display = "none";
-      $("obUrl").style.display = "none";
-      const blurb = document.querySelector("#onboard .card .muted");
-      if (blurb) blurb.textContent = "Your owned locks + wishlist come from Lock Hunter on your PC — this web copy can browse the catalog and show what was last synced, nothing more.";
-      $("obMsg").textContent = NO_PC_SYNC_MSG; $("obMsg").className = "msg";
+      // v1.8.4: the hosted copy can sync now — it reads the profile itself.
+      // Live search, Compare and "Never show again" still need the PC.
+      $("obMsg").textContent = "Live search and Compare still need Lock Hunter on your PC — open the copy it serves for those."; $("obMsg").className = "msg";
     } else if (!LAN.token) {
       // PC-served copy but not paired yet: pairing lives on the Search tab, which
       // this overlay covers — so offer the pairing box right here (B6)
       const pr = $("obPairRow"); if (pr) pr.style.display = "flex";
-      $("obMsg").textContent = "Enter the pairing code shown in Lock Hunter (Settings… → Phone link → Set up…), then Sync."; $("obMsg").className = "msg";
+      $("obMsg").textContent = "Your collection loads from the profile link above — no pairing needed for that. The pairing code below is only for live search from this phone (Lock Hunter → Settings… → Phone link → Set up…)."; $("obMsg").className = "msg";
       $("obPairGo").onclick = async () => {
         const t = ($("obTok").value || "").trim();
         if (!t) return;
