@@ -239,7 +239,7 @@ a.plain{color:var(--accent); text-decoration:none}
     <h2>Sync your collection</h2>
     <div class="muted" style="margin-bottom:10px">
       Paste your <a class="plain" href="https://lpubelts.com" target="_blank" rel="noopener">lpubelts.com</a>
-      profile link and your owned locks + wishlist load straight from LPU — no PC needed.
+      profile link and your owned locks + wishlist load from LPU.
       (Open lpubelts.com, go to your profile, copy the address.) You can always change it
       later on the <b>Collection</b> tab.
     </div>
@@ -265,7 +265,7 @@ a.plain{color:var(--accent); text-decoration:none}
    ===================================================================== */
 "use strict";
 const LHC = (() => {
-  const VERSION = "1.8.4";
+  const VERSION = "1.9.0";
   const CANONICAL_BELTS = ["White","Yellow","Orange","Green","Blue","Purple",
                            "Brown","Red","Black","Unranked"];
   const BELT_RANK = Object.fromEntries(CANONICAL_BELTS.map((b,i)=>[b,i]));
@@ -870,9 +870,66 @@ const LHC = (() => {
   }
 
   // ---- extract_profile_uid (L6665)
+  // ---- id parsing: EXACT twins of lock_hunter.py (v7.0.3). THREE forms:
+  //   1. the lpubelts.com profile link   .../#/profile/<id>[?name=...]
+  //   2. the profile service URL itself  .../API/profile/?token=<t>&id=<id>
+  //   3. the bare member id              <id>
+  // Form 2 used to be REJECTED: the pattern wanted the id straight after
+  // "profile/", and in the service URL what follows is "?token=" - so
+  // pasting the very URL the app builds got you "that doesn't look like an
+  // LPU profile link" and no request was ever made (Ferf, 2026-08-19).
+  //
+  // The ONE whitespace set both sides strip. String.trim() and Python's
+  // str.strip() do NOT agree and the gap is invisible on screen: JS strips a
+  // BOM but leaves \x1c-\x1f and \x85; Python does the opposite. Keep this
+  // string character for character identical to _PROFILE_TRIM in the Python.
+  const PROFILE_TRIM = " \t\n\u000b\f\r\u001c\u001d\u001e\u001f\u0085\u00a0\u1680" +
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007" +
+    "\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff";
+  function profileTrim(v){
+    const s = String(v || "");
+    let a = 0, b = s.length;
+    while (a < b && PROFILE_TRIM.indexOf(s.charAt(a)) >= 0) a++;
+    while (b > a && PROFILE_TRIM.indexOf(s.charAt(b - 1)) >= 0) b--;
+    return s.slice(a, b);
+  }
+  // Case-insensitivity is spelled out per character rather than with /i:
+  // Python's re.IGNORECASE also folds the CHARACTER CLASS (it matches U+017F
+  // and U+212A inside [A-Za-z0-9_-]) where JS /i does not, so the twins
+  // returned DIFFERENT ids for the same paste. Keep these literal.
+  const RE_PROFILE_PATH = /[Pp][Rr][Oo][Ff][Ii][Ll][Ee]\/([A-Za-z0-9_-]{10,})/;
+  const RE_ID_PARAM = /[?&][Ii][Dd]=([A-Za-z0-9_-]{10,})/;
+  // A bare id arrives with no context to prove it is one, so it has to LOOK
+  // like one: an LPU member id is 28 alphanumeric characters.
+  // Unbounded, this accepted any 10+ of [A-Za-z0-9_-] - so an API key, a
+  // password, or this app's own pairing token pasted into the wrong box was
+  // forwarded to a service whose notice says every request is logged.
+  const RE_BARE_UID = /^[A-Za-z0-9]{24,36}$/;
   function extractUid(url){
-    const m = /profile\/([A-Za-z0-9_-]{10,})/.exec(String(url||""));
-    return m ? m[1] : null;
+    const s = profileTrim(url);
+    if (!s) return null;
+    let m = RE_PROFILE_PATH.exec(s);
+    if (m) return m[1];
+    m = RE_ID_PARAM.exec(s);
+    if (m) return m[1];
+    if (RE_BARE_UID.test(s)) return s;
+    return null;
+  }
+  // twin of canonical_profile_url. A link already spelling the path the
+  // canonical way is kept exactly as pasted; anything else carrying an id
+  // is rewritten, so what we SAVE is always a real link (the "open profile"
+  // tap needs one) and always one shape.
+  function canonicalProfileUrl(url){
+    const uid = extractUid(url);
+    if (!uid) return "";
+    const s = profileTrim(url);
+    // Keep the member's own link verbatim only when the whole string IS a
+    // link spelling the path the canonical way. "my link https://…/profile/x
+    // thanks" used to be stored whole, shown in Settings, pushed to the phone,
+    // and then failed the ^https?:// test that gates "open profile".
+    if (/^https?:\/\//i.test(s) && s.indexOf(" ") < 0 &&
+        s.indexOf("profile/") >= 0 && RE_PROFILE_PATH.test(s)) return s;
+    return "https://lpubelts.com/#/profile/" + uid;
   }
   // ---- network (fetchFn injectable for tests)
   async function fetchJson(url, opts, fetchFn){
@@ -912,7 +969,7 @@ const LHC = (() => {
           foldLight, fold, normSizes, canonAliases, tokensOf, matchTokens, splitCatalogNames,
           bzSeller, bzMake, bzModel, bzBelt, bzLockName, bzPrice,
           bzEntryKey, bazaarLockUrl, collectListings, isLockListing, matchBazaar,
-          extractUid,
+          extractUid, canonicalProfileUrl, profileTrim,
           LPU_PROFILE_API, LPU_APP_TOKEN, lpuProfileUrl, lpuPayload, lpuIds,
           lpuProfileFromResponse,
           fetchJson, fetchFirstJson,
@@ -946,7 +1003,7 @@ const S = {
   catalog: [], byId: new Map(),
   own: new Set(store.get("own", [])),
   wish: new Set(store.get("wish", [])),
-  profile: store.get("profile", null),           // {uid,url,ts,ownN,wishN}
+  profile: store.get("profile", null),           // {uid,url,ts,ownN,wishN,mine}
   listings: [], bzMatch: null,                   // {byLock,rowLock}
   cmpResults: null,
   feeds: {catalog:{st:"…"}, stats:{st:"…"}, bazaar:{st:"…"}},
@@ -1045,7 +1102,7 @@ function pcStateMessage(feature){
   if (typeof LAN === "undefined" || !LAN_MODE) {
     return feature + " runs through Lock Hunter on your PC. Open the copy your PC serves — " +
       "the address under Settings… → Phone link → Set up… (same Wi-Fi) — to use it. " +
-      "(Your own collection loads here from your profile link, no PC needed.)";
+      "(Your own collection loads from your profile link, read through your PC.)";
   }
   if (LAN.ok) return "";
   if (!LAN.token) return feature + " needs your PC: enter the pairing code from Lock Hunter first (Search tab, or the box in the first-run card).";
@@ -1055,19 +1112,54 @@ function pcStateMessage(feature){
 // The profile link this phone should use: what was just typed, else what is
 // saved here, else the link the PC has (so a paired phone syncs with nothing
 // typed at all, as it did before v1.8.4).
+// v1.9.0 added `mine` to the stored profile. A profile written by an older
+// build has no such key, and reading that as false would hand the PC's
+// member to a phone that had deliberately chosen its own - silently, on the
+// first background sync, overwriting the saved link with no undo and no
+// message. Anything stored before this release keeps working exactly as it
+// did: treat it as this phone's own choice. The new follow-the-PC behaviour
+// starts the first time someone taps "use my PC's profile".
+if (S.profile && S.profile.url && S.profile.mine === undefined) S.profile.mine = true;
 function profileLinkFor(url){
-  return String(url || (S.profile && S.profile.url) ||
-                (typeof LAN !== "undefined" && LAN.profile && LAN.profile.url) || "").trim();
+  if (url) return String(url).trim();
+  // v1.9.0: the PC's own uid counts as a link now - extractUid takes a bare
+  // id - so a PC that advertises {uid} without {url} no longer dead-ends the
+  // phone at "paste your profile link" with the box hidden.
+  const pc = String((typeof LAN !== "undefined" && LAN.profile &&
+                     (LAN.profile.url || LAN.profile.uid)) || "").trim();
+  // v1.8.4's rule was "a profile chosen HERE survives every reconnect", and
+  // it still does - but ONLY when this phone actually chose it. Without that
+  // distinction a phone that merely inherited profile A from the PC kept
+  // re-syncing A forever after the desktop moved to B, and the card blamed
+  // the user for an override they never made.
+  const mine = !!(S.profile && S.profile.mine && S.profile.url);
+  if (!mine && pc) return pc;
+  return String((S.profile && S.profile.url) || pc || "").trim();
 }
 // ONE GET to LPU's profile service. A browser can refuse this in a way the
 // desktop never sees — if LPU's endpoint sends no CORS header the request is
 // blocked before it leaves, and fetch rejects with a bare TypeError. Say so
 // in words instead of "failed to fetch".
-function lpuBlocked(){
-  const e = new Error("this phone couldn't reach LPU's profile service " +
+function lpuBlocked(detail){
+  const e = new Error(detail || "this phone couldn't reach LPU's profile service " +
     "(no answer, or your browser blocked the request). Check you're online — " +
     "if it keeps happening, sync on the PC instead and the phone will pick it up.");
   e.kind = "blocked"; return e;
+}
+// Was the service unreachable, or reachable but refused to the page? A
+// no-cors request succeeds (opaquely) when the host answered and only the
+// CORS rule stopped us reading it — so we can say which it was instead of
+// guessing. Never throws; worst case we keep the general wording.
+async function lpuReachableButBlocked(uid){
+  try {
+    const ac = (typeof AbortController !== "undefined") ? new AbortController() : null;
+    const timer = ac ? setTimeout(() => ac.abort(), 8000) : null;
+    try {
+      await fetch(LHC.lpuProfileUrl(uid), ac ? {mode: "no-cors", cache: "no-store", signal: ac.signal}
+                                             : {mode: "no-cors", cache: "no-store"});
+      return true;
+    } finally { if (timer) clearTimeout(timer); }
+  } catch (e) { return false; }
 }
 async function fetchProfileFromLPU(uid){
   // the desktop passes timeout=30 to requests.get; a phone on a half-open
@@ -1082,7 +1174,15 @@ async function fetchProfileFromLPU(uid){
     let r;
     try {
       r = await fetch(LHC.lpuProfileUrl(uid), ac ? {cache: "no-store", signal: ac.signal} : {cache: "no-store"});
-    } catch (ex) { throw lpuBlocked(); }
+    } catch (ex) {
+      throw lpuBlocked(await lpuReachableButBlocked(uid)
+        ? ("LPU's profile service answered, but your browser is not allowed to read it " +
+           "from a page (LPU sends no cross-origin header). Lock Hunter on your PC can " +
+           "read it for you — " + (LAN_MODE
+             ? "make sure Lock Hunter is open on your PC and tap this again."
+             : "open the copy your PC serves (Settings… → Phone link → Set up…)."))
+        : undefined);
+    }
     if (r.status === 401 || r.status === 403){
       const e = new Error("LPU's profile service refused this request (HTTP " + r.status +
         "). If it happens for every profile, Lock Hunter's access to the service has " +
@@ -1103,6 +1203,55 @@ async function fetchProfileFromLPU(uid){
 // last resort only: if LPU can't be reached FROM THE PHONE but the PC is
 // right there and already has the collection, use it rather than leaving the
 // user with nothing. Always says which source it used.
+// v1.8.5: the PC reads LPU for us. A BROWSER cannot call LPU's profile
+// service cross-origin unless LPU sends an Access-Control-Allow-Origin header
+// — and it does not, so the direct read from the phone is blocked before it
+// leaves. The PC has no such restriction (it is Python, not a browser), and
+// its /api/compare endpoint already reads ANY member's collection through the
+// same service with the same app token. So when a PC is reachable we ask it,
+// and the direct read becomes the path for when there is no PC at all.
+async function readProfileViaPc(uid, fresh){
+  if (typeof LAN === "undefined" || !LAN_MODE || !LAN.ok) return null;
+  const path = "/api/compare?uid=" + encodeURIComponent(uid) + (fresh ? "&fresh=1" : "");
+  // the PC allows itself 30 s for the LPU read and takes a one-at-a-time lock
+  // for it, which the Compare tab shares — so wait out a busy PC rather than
+  // giving up after one blink
+  for (let attempt = 0; attempt < 4; attempt++){
+    if (attempt) await new Promise(res => setTimeout(res, 3000));
+    let r;
+    try { r = await lanApi(path, null, 45000); }
+    catch (e) { return null; }                     // PC unreachable — caller tries LPU
+    if (r.status === 409) continue;                // the PC is mid-compare
+    if (r.status === 404) return null;             // older Lock Hunter on the PC
+    let j = null;
+    try { j = await r.json(); } catch (e) { return null; }
+    if (!r.ok || !j || j.ok === false){
+      // Which failure was it? "answered" = LPU replied and said no, so there
+      // is nothing to retry and no fallback that could be more right.
+      // Anything else is the PC not getting through, and the caller should
+      // try the other routes. Older PCs send no `kind`; their unreachable
+      // message has a known prefix, and their raw one is a wall of Python
+      // internals (with the app token and the member id in it) — never shown.
+      const raw = String((j && j.error) || "");
+      const kind = String((j && j.kind) || "");
+      // 401/403 from the PC is about OUR pairing code, not about LPU
+      const routeFailed = (r.status === 401 || r.status === 403)
+        || (kind && kind !== "answered")
+        || (!kind && /^couldn't reach the LPU profile service/.test(raw));
+      if (routeFailed) return null;
+      // A PC that told us the kind is sending one of its own hand-written
+      // messages, and the longest of them — "LPU refused this request, check
+      // for a newer Lock Hunter" — is the ONE the user can act on. Only an
+      // older PC's message needs the length guard against raw Python.
+      const e = new Error((raw && (kind || raw.length <= 200)) ? raw
+        : ("the PC couldn't read that profile (HTTP " + r.status + ")"));
+      e.kind = "answered"; throw e;
+    }
+    return { own: new Set((j.own || []).map(String)),
+             wish: new Set((j.wish || []).map(String)) };
+  }
+  return null;                                     // busy every time — try LPU
+}
 async function syncProfileViaPc(msgEl){
   if (typeof LAN === "undefined" || !LAN_MODE || !LAN.ok) return null;
   try {
@@ -1115,13 +1264,51 @@ async function syncProfileViaPc(msgEl){
     return {own, wish, url: String(j.url || "")};
   } catch (e) { return null; }
 }
+// sticky flag for the profile card: "use a different profile" was tapped.
+// Declared HERE, above both users (finishSync clears it, renderProfileCard
+// reads it), so neither sits above its own declaration.
+let profEdit = false;
+// The user has typed in the box since it was last opened. The v1.8.4 guard
+// asked "does the box hold text different from the prefill?", which is false
+// the instant someone selects-all and deletes to retype - and a background
+// renderAll() landing in that gap removed the input, and the keyboard with
+// it, mid-edit. Interaction is the thing worth remembering, not content.
+let profTouched = false;
+// v1.9.0: renderAll() replaces #profMsg, so a handler that captured the old
+// node writes into a detached element and the user sees NOTHING. finishSync
+// already re-found it for the success text; every failure path used to write
+// to the captured node and silently vanish. One helper for both.
+function profMsg(msgEl, text, cls){
+  if (msgEl){ msgEl.textContent = text; msgEl.className = cls; }
+  if (msgEl && msgEl.id){
+    const again = $(msgEl.id);
+    if (again && again !== msgEl){ again.textContent = text; again.className = cls; }
+  }
+}
 async function syncProfile(url, msgEl, opts){
   msgEl = msgEl || {textContent:"", className:""};
   opts = opts || {};
-  // the collection no longer needs the PC, but a Sync is still a good moment
-  // to nudge a sleeping one back — in the background, so it never delays the
-  // LPU read. ensurePc() swallows its own errors.
-  try { ensurePc(); } catch(e){}
+  // the PC is the reader now, so a sleeping one has to be woken BEFORE we
+  // decide it isn't there — that is what "tap Connect (or run a search) to
+  // reconnect" promises. Bounded by lanHello's own 8 s timeout, and instant
+  // on the hosted copy (ensurePc returns at once when there is no PC).
+  if (typeof LAN !== "undefined" && LAN_MODE && LAN.token && !LAN.ok){
+    profMsg(msgEl, "Waking your PC…", "msg");
+  }
+  try { await ensurePc(); } catch(e){}
+  // v7.0.3: a bare id is accepted now, and this phone's pairing code is the
+  // same shape (32 hex characters). Pasted into the wrong box it would be
+  // forwarded to LPU's profile service, whose own notice says every request
+  // is logged - so refuse the one value we can actually recognise.
+  // Compare with the SHARED trim table, not String.trim(): the five
+  // characters Python strips and JavaScript does not (\x1c-\x1f, \x85) slipped
+  // straight past a native trim and the pairing code went to LPU anyway.
+  if (url && typeof LAN !== "undefined" && LAN.token &&
+      LHC.profileTrim(url) === LHC.profileTrim(LAN.token)){
+    profMsg(msgEl, "That's your PC pairing code, not your profile. Your profile " +
+      "link comes from lpubelts.com and has /profile/<id> in it.", "msg err");
+    return false;
+  }
   let link = profileLinkFor(url);
   let uid = LHC.extractUid(link);
   // No link anywhere yet? A connected PC knows its own — take it and use it
@@ -1131,62 +1318,126 @@ async function syncProfile(url, msgEl, opts){
     await ensurePc();
     const first = await syncProfileViaPc();
     if (!first){
-      msgEl.textContent = "Paste your lpubelts.com profile link — the one with /profile/<id> in it. " +
-        "Open lpubelts.com, go to your profile and copy the address.";
-      msgEl.className = "msg err"; return false;
+      profMsg(msgEl, "Paste your lpubelts.com profile link — the one with /profile/<id> in it, " +
+        "or just your member id. Open lpubelts.com, go to your profile and copy the address.",
+        "msg err"); return false;
     }
     link = String(first.url || ""); uid = LHC.extractUid(link) || "";
     if (!uid){                                  // PC has the lists but no link
-      finishSync(first.own, first.wish, "", link, "your PC", msgEl);
+      // The PC handed over lists but nothing we can parse as a link. Keep
+      // whatever this phone already had rather than blanking it - wiping the
+      // saved link here also wiped `mine`, and the next background sync then
+      // adopted the PC's member.
+      finishSync(first.own, first.wish,
+                 String((S.profile && S.profile.uid) || ""),
+                 String((S.profile && S.profile.url) || link || ""),
+                 "your PC", msgEl,
+                 {silent: !!opts.silent, mine: !!(S.profile && S.profile.mine)});
       return true;
     }
   }
-  msgEl.textContent = "Reading your collection from LPU…"; msgEl.className = "msg";
+  // v7.0.3: save ONE shape whatever was typed (link / service URL / bare id)
+  link = LHC.canonicalProfileUrl(link) || link;
   let own = null, wish = null, from = "LPU";
-  try {
-    const got = await fetchProfileFromLPU(uid);
-    own = got.own; wish = got.wish;
-  } catch(ex) {
-    // The PC may stand in for a call that never GOT THROUGH — never for an
-    // answer. When LPU says "no such profile", "that's a different member" or
-    // "refused", handing over the PC's collection would save one member's
-    // locks under another member's link. And even then, only if the PC holds
-    // the SAME member: the desktop refuses a mismatched userId (v7.0.1
-    // fetch_profile_via_api) and so must this.
-    const viaPc = (ex.kind === "blocked") ? await syncProfileViaPc() : null;
-    const pcUid = viaPc ? (LHC.extractUid(String(viaPc.url || "")) || "") : "";
-    if (!viaPc || pcUid !== uid){
-      msgEl.textContent = "Sync failed: " + ex.message; msgEl.className = "msg err"; return false;
+  // 1. THE PC, if it is there. It reads the same service with the same token
+  //    and is not subject to the browser's cross-origin rule, so this is the
+  //    path that actually works on a phone. It reads the uid WE asked for, so
+  //    there is no way to end up with another member's locks.
+  const havePc = (typeof LAN !== "undefined" && LAN_MODE && LAN.ok);
+  if (havePc){
+    profMsg(msgEl, "Asking your PC to read your LPU profile…", "msg");
+    try {
+      // an explicit tap must never be served from the PC's ten-minute compare
+      // cache: someone who just added a lock on lpubelts.com and tapped
+      // "Update profile" has to see it. The quiet boot sync may use it.
+      const got = await readProfileViaPc(uid, !opts.silent);
+      if (got){ own = got.own; wish = got.wish; from = "your PC"; }
+    } catch(ex) {
+      // the PC reached LPU and LPU refused — that is an answer, not a route
+      // problem, so trying again from the browser would only be blocked
+      profMsg(msgEl, "Sync failed: " + ex.message, "msg err"); return false;
     }
-    own = viaPc.own; wish = viaPc.wish; from = "your PC";   // link stays the user's
+  }
+  // 2. No PC, or the PC couldn't be asked: read LPU from here. This is the
+  //    only path the hosted copy has, and it needs LPU to allow cross-origin
+  //    reads — fetchProfileFromLPU says so plainly when it doesn't.
+  if (own === null){
+    profMsg(msgEl, "Reading your collection from LPU…", "msg");
+    try {
+      const got = await fetchProfileFromLPU(uid);
+      own = got.own; wish = got.wish;
+    } catch(ex) {
+      // 3. Last resort: the collection the PC already had saved — and only
+      //    when the call never GOT THROUGH and the PC holds the SAME member.
+      //    An LPU answer ("no such profile", "different member", "refused")
+      //    must never be papered over with someone else's locks.
+      const viaPc = (ex.kind === "blocked") ? await syncProfileViaPc() : null;
+      const pcUid = viaPc ? (LHC.extractUid(String(viaPc.url || "")) || "") : "";
+      if (!viaPc || pcUid !== uid){
+        profMsg(msgEl, "Sync failed: " + ex.message, "msg err"); return false;
+      }
+      own = viaPc.own; wish = viaPc.wish; from = "your PC";   // link stays the user's
+    }
   }
   // A quiet background sync must not wipe a saved collection because LPU
   // answered empty this once — the desktop's silent refresh keeps the old
   // lists too (review B1); only an explicit tap applies an empty answer.
   if (opts.silent && !own.size && !wish.size && (S.own.size || S.wish.size)) return false;
-  finishSync(own, wish, uid, link, from, msgEl);
+  // did THIS phone choose the profile, or did it inherit the PC's? An
+  // explicit link typed here says yes; a blank refresh keeps whatever it
+  // was; "use my PC's profile" (opts.fromPc) says no.
+  // Only a link we could actually READ counts as a choice. An unparseable
+  // paste falls through to the PC's profile below, and marking THAT as this
+  // phone's own choice both hid the bad paste and pinned the phone to the
+  // PC's current member for good.
+  const mine = url ? (!opts.fromPc && !!LHC.extractUid(String(url)))
+                   : !!(S.profile && S.profile.mine);
+  finishSync(own, wish, uid, link, from, msgEl, {silent: !!opts.silent, mine});
   return true;
 }
-function finishSync(own, wish, uid, link, from, msgEl){
+function finishSync(own, wish, uid, link, from, msgEl, opts){
+  opts = opts || {};
   S.own = own; S.wish = wish;
-  S.profile = {uid, url: link, ts: Date.now(), ownN: own.size, wishN: wish.size};
+  S.profile = {uid, url: link, ts: Date.now(), ownN: own.size, wishN: wish.size,
+               mine: !!opts.mine};
   store.set("own", [...own]); store.set("wish", [...wish]);
   store.set("profile", S.profile);
+  // A sync the USER asked for spends whatever is in the box: clear the edit
+  // flag and put the saved link back, so the card can tuck the box away and
+  // label its button correctly. A SILENT background sync must do neither -
+  // it can fire from the boot autoSync or the Search-tab Connect button
+  // while the user is midway through pasting a different link, and wiping
+  // their text and pulling the box out from under them is precisely the
+  // "never taken away while it is in use" promise this card exists to keep.
+  // Never touch a box that currently has focus, whatever kind of sync it is.
+  const box = $("profUrl");
+  const busy = !!(box && typeof document !== "undefined" && document.activeElement === box);
+  if (!opts.silent && !busy){
+    profEdit = false; profTouched = false;
+    if (box) box.value = String(link || "");
+  }
   // an empty collection is a valid answer, not a failure (desktop review B1)
   const done = (!own.size && !wish.size)
     ? `Synced from ${from}: that profile has no owned or wishlist locks saved yet.`
     : `Synced from ${from}: ${own.size} owned, ${wish.size} wishlist.`;
-  msgEl.textContent = done; msgEl.className = "msg ok";
   renderAll();
   // renderAll() rebuilds the profile card, replacing its message element —
-  // put the confirmation on the fresh one too (v1.8.0), so a manual
+  // profMsg puts the confirmation on the fresh one too (v1.8.0), so a manual
   // "Update profile" actually shows what it just did
-  if (msgEl && msgEl.id) { const again = $(msgEl.id); if (again && again !== msgEl) { again.textContent = done; again.className = "msg ok"; } }
+  profMsg(msgEl, done, "msg ok");
 }
 // v1.8.4: the link box is ALWAYS here. Before, it only existed until the
 // first sync — after that the card showed a count and an Update button, so a
 // user who left the page to fetch their profile link came back to find the
 // box gone and no way to enter or change the link (reported by Ferf).
+// v1.9.0: the box no longer ASKS when the PC has already answered (Ferf:
+// "why do you ask for a profile if you're pulling it from the PC anyway?").
+// On the PC-served copy the PC's own profile IS the answer — /api/hello
+// carries {url, uid} and /api/collection carries the lists — so the card
+// reports what it is using and keeps one "use a different profile" link for
+// the case where this phone wants a different member than the desktop.
+// v1.8.4 rule still holds underneath: whatever a user types HERE survives
+// every reconnect, and the box is never taken away while it is in use.
 function renderProfileCard(){
   const el = $("profileBody");
   // the card is rebuilt by every renderAll() — including the one the Bazaar
@@ -1194,23 +1445,149 @@ function renderProfileCard(){
   const live = $("profUrl");
   const typing = live ? { v: live.value, focus: (document.activeElement === live),
                           s: live.selectionStart, e: live.selectionEnd } : null;
-  const saved = String((S.profile && S.profile.url) || "");
+  const saved  = String((S.profile && S.profile.url) || "");
   const pcLink = String((typeof LAN !== "undefined" && LAN.profile && LAN.profile.url) || "");
-  const head = S.profile
-    ? `<div class="muted">Synced ${S.profile.ownN} owned + ${S.profile.wishN} wishlist` +
-      ` · ${(Math.round((Date.now()-S.profile.ts)/3600e3) < 1) ? "under an hour" : Math.round((Date.now()-S.profile.ts)/3600e3) + "h"} ago</div>`
-    : `<div class="muted">Paste your <a class="plain" href="https://lpubelts.com" target="_blank" rel="noopener">lpubelts.com</a> profile link to load your owned locks and wishlist. It's read straight from LPU, so it works with your PC switched off.</div>`;
-  el.innerHTML = head +
-    `<input type="url" id="profUrl" placeholder="https://lpubelts.com/#/profile/…" style="margin-top:8px" value="${esc(saved || pcLink)}">` +
-    `<div class="row" style="margin-top:8px">` +
-    `<button class="primary small" id="profGo">${S.profile ? "Update profile" : "Load my collection"}</button>` +
-    (/^https?:\/\//i.test(saved) ? `<a class="plain" style="font-size:12.5px" target="_blank" rel="noopener" href="${esc(saved)}">open profile</a>` : "") +
-    `</div>` +
-    `<div class="msg" id="profMsg"></div>`;
-  $("profGo").onclick = () => syncProfile($("profUrl").value.trim(), $("profMsg"));
-  if (typing && typing.v && typing.v !== (saved || pcLink)){
-    const box = $("profUrl"); box.value = typing.v;
-    if (typing.focus){ try { box.focus(); box.setSelectionRange(typing.s, typing.e); } catch(e){} }
+  const pcUid  = String((typeof LAN !== "undefined" && LAN.profile && LAN.profile.uid) || "") ||
+                 (LHC.extractUid(pcLink) || "");
+  const savedUid = LHC.extractUid(saved) || String((S.profile && S.profile.uid) || "");
+  const pcOn   = !!(typeof LAN !== "undefined" && LAN_MODE && LAN.ok);
+  const pcHas  = !!(pcOn && pcUid);                 // the PC knows a profile
+  // this phone was pointed at a DIFFERENT member than the desktop. Compare
+  // ids, not link text: v7.0.3 accepts three ways of writing the same id.
+  // An override is a CHOICE made on this phone. Merely holding a different
+  // id than the PC is not one: the desktop may simply have moved to another
+  // member, and calling that "this phone is set to its own profile" blames
+  // the user for something the app did (and stranded them on the old member).
+  const override = !!(pcHas && savedUid && savedUid !== pcUid &&
+                      S.profile && S.profile.mine);
+  // The box must show the link that a tap would ACTUALLY sync. Resolving it
+  // here independently ("saved || pcLink") let the card display one member,
+  // link "open profile" to a second, and sync a third - and made a no-op tap
+  // on the prefilled value count as choosing it.
+  const prefill = profileLinkFor("");
+  // Show the box when we genuinely need an answer — and never yank it away
+  // from someone in the middle of typing into it (a Bazaar feed landing must
+  // not eat a half-pasted link just because the PC connected a moment ago).
+  const mid = !!(typing && (profTouched || typing.focus ||
+                           (typing.v && typing.v !== prefill)));
+  const askBox = !pcHas || override || profEdit || mid;
+  // ts comes back out of localStorage like the counts do - a corrupt value
+  // would otherwise render "NaNh ago".
+  const hrs = S.profile ? Math.round((Date.now() - (Number(S.profile.ts) || 0)) / 3600e3) : 0;
+  const ago = S.profile ? ((hrs < 1 || !Number(S.profile.ts)) ? "under an hour" : hrs + "h") : "";
+  // ownN/wishN come back out of localStorage, so they are whatever is
+  // stored there - Number() them rather than interpolating raw into HTML.
+  const syncLine = S.profile
+    ? `Synced ${Number(S.profile.ownN) || 0} owned + ${Number(S.profile.wishN) || 0}` +
+      ` wishlist · ${ago} ago`
+    : "";
+  const idHTML = u => `<span style="font-family:ui-monospace,Menlo,Consolas,monospace;` +
+                      `word-break:break-all">${esc(u)}</span>`;
+  let head;
+  if (pcHas && !override){
+    head = `<div class="muted">Using the profile Lock Hunter has on your PC — ${idHTML(pcUid)}. ` +
+           (S.profile ? `${syncLine}.` : `Not loaded on this phone yet — tap the button below.`) +
+           `</div>`;
+  } else if (override){
+    head = `<div class="muted">This phone is set to its own profile — ${idHTML(savedUid)}` +
+           (pcUid ? ` (your PC uses ${idHTML(pcUid)})` : ``) + `. ` +
+           (S.profile ? `${syncLine}.` : ``) + `</div>`;
+  } else if (pcOn){
+    // The PC is here but carries no profile of its own. That does NOT mean
+    // this phone has nothing: it may have synced from the PC's saved
+    // collection, or from a link entered here. Report what is held FIRST -
+    // dropping the count because the PC's hello was thin is a lie about
+    // this phone's state (caught by the LAN e2e).
+    head = `<div class="muted">` +
+           (S.profile
+             ? `${syncLine}. Your PC has no profile link saved of its own — set it there ` +
+               `(Settings… → LPU profile), or enter one below just for this phone.`
+             : `Lock Hunter on your PC has no profile link saved. Set it there ` +
+               `(Settings… → LPU profile) and this page picks it up — or enter one below, ` +
+               `just for this phone.`) + `</div>`;
+  } else if (LAN_MODE){
+    head = S.profile
+      ? `<div class="muted">${syncLine}. Can't reach your PC at the moment — it is what reads ` +
+        `your profile from LPU.</div>`
+      : `<div class="muted">Connect to your PC above and it loads your owned locks and wishlist ` +
+        `for you — nothing to paste here.</div>`;
+  } else {
+    head = `<div class="muted">` + (S.profile ? `${syncLine}. ` : ``) +
+           `This copy can't read LPU by itself — their profile service doesn't allow browser ` +
+           `reads (measured 2026-08-19) — so use the page your PC serves.</div>`;
+  }
+  const btn = (pcHas && !override && !askBox) ? "Refresh from PC"
+            : (S.profile ? "Update profile" : "Load my collection");
+  let html = head;
+  if (askBox){
+    html += `<input type="url" id="profUrl" placeholder="lpubelts.com profile link, or just the member id" ` +
+            `style="margin-top:8px" value="${esc(prefill)}">`;
+  }
+  html += `<div class="row" style="margin-top:8px">` +
+          `<button class="primary small" id="profGo">${btn}</button>`;
+  if (pcHas && !askBox)
+    html += `<a class="plain" href="#" id="profEdit" style="font-size:12.5px">use a different profile</a>`;
+  if (override || (profEdit && pcHas))
+    html += `<a class="plain" href="#" id="profPc" style="font-size:12.5px">` +
+            (override ? `use my PC's profile` : `keep my PC's profile`) + `</a>`;
+  if (/^https?:\/\//i.test(prefill))
+    html += `<a class="plain" style="font-size:12.5px" target="_blank" rel="noopener" ` +
+            `href="${esc(prefill)}">open profile</a>`;
+  html += `</div><div class="msg" id="profMsg"></div>`;
+  el.innerHTML = html;
+  $("profGo").onclick = () => {
+    const box = $("profUrl");
+    const v = box ? box.value.trim() : "";
+    // Tapping the button on an untouched prefill is a refresh, not a choice.
+    // Passing it as an explicit link would mark this phone's profile "mine"
+    // and stop it following the PC - from a tap that changed nothing.
+    syncProfile(v === prefill ? "" : v, $("profMsg"));
+  };
+  const boxNow = $("profUrl");
+  if (boxNow) boxNow.oninput = () => { profTouched = true; };
+  const ed = $("profEdit");
+  if (ed) ed.onclick = (ev) => {
+    ev.preventDefault(); profEdit = true; profTouched = false; renderProfileCard();
+    const box = $("profUrl"); if (box) { try { box.focus(); } catch(e){} }
+  };
+  const back = $("profPc");
+  if (back) back.onclick = (ev) => {
+    ev.preventDefault();
+    profEdit = false; profTouched = false;
+    // "keep" is a cancel - nothing was chosen, so don't re-read anything.
+    // The box has to be put BACK to the prefill as well, or the abandoned
+    // text keeps the mid-edit guard true and the card never closes up again.
+    if (!override){
+      const b = $("profUrl"); if (b) b.value = prefill;
+      renderProfileCard(); return;
+    }
+    // Read LAN.profile NOW, not at render time: _lanHello updates it without
+    // repainting the card, so a captured value points at the PC's previous
+    // member. No render-time fallback - that is the staleness we just removed.
+    const live = (typeof LAN !== "undefined" && LAN.profile) || {};
+    const target = String(live.url || live.uid || "");
+    if (!target){
+      profMsg($("profMsg"), "Your PC hasn't said which profile it uses.", "msg err");
+      renderProfileCard(); return;
+    }
+    syncProfile(target, $("profMsg"), {fromPc: true});
+  };
+  // Put back exactly what was in the box, INCLUDING an empty string: someone
+  // who selects-all and deletes to retype had their deletion undone and the
+  // keyboard closed by the next background render, because the old guard
+  // only restored non-empty text.
+  if (typing){
+    const box = $("profUrl");
+    // An EMPTY box is only worth putting back when the user emptied it. A box
+    // that merely rendered empty - the card drawn before the first sync had a
+    // link to show - would otherwise have its emptiness copied forward by
+    // every later render, and the prefill could never appear. (Caught as an
+    // intermittent failure in the LAN e2e, which is exactly the race.)
+    const userHas = typing.v !== prefill && (typing.v || profTouched || typing.focus);
+    if (box && userHas){
+      if (box.value !== typing.v) box.value = typing.v;
+      if (typing.focus){ try { box.focus(); box.setSelectionRange(typing.s, typing.e); } catch(e){} }
+    }
   }
 }
 
@@ -1373,8 +1750,16 @@ async function runCompare(){
     await ensurePc();
     const why = pcStateMessage("Compare");
     if (why) throw new Error(why);
-    const r = await lanApi("/api/compare?uid=" + encodeURIComponent(uid), null, 45000);
-    let j = null; try { j = await r.json(); } catch (e) {}
+    // the PC runs one profile read at a time and the phone's own collection
+    // sync now shares that lock (v1.8.5) — wait it out instead of failing
+    let r = null, j = null;
+    for (let attempt = 0; attempt < 4; attempt++){
+      if (attempt) await new Promise(res => setTimeout(res, 3000));
+      r = await lanApi("/api/compare?uid=" + encodeURIComponent(uid), null, 45000);
+      if (r.status !== 409) break;
+      msg.textContent = "Your PC is busy reading a profile — waiting…";
+    }
+    try { j = await r.json(); } catch (e) {}
     if (r.status === 404) throw new Error("your PC's Lock Hunter is older than this page — update it to v6.2.8+");
     if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || ("PC returned HTTP " + r.status));
     const theirs = {own: new Set((j.own || []).map(String)), wish: new Set((j.wish || []).map(String))};
@@ -2119,7 +2504,7 @@ async function boot(){
     if (!LAN_MODE) {
       // v1.8.4: the hosted copy can sync now — it reads the profile itself.
       // Live search, Compare and "Never show again" still need the PC.
-      $("obMsg").textContent = "Live search and Compare still need Lock Hunter on your PC — open the copy it serves for those."; $("obMsg").className = "msg";
+      $("obMsg").textContent = "This is the hosted copy: it asks LPU directly, which only works if your browser is allowed to read LPU's service. Live search and Compare need Lock Hunter on your PC — the copy it serves reads your profile through the PC too."; $("obMsg").className = "msg";
     } else if (!LAN.token) {
       // PC-served copy but not paired yet: pairing lives on the Search tab, which
       // this overlay covers — so offer the pairing box right here (B6)
